@@ -99,7 +99,6 @@
     @apply border-border;
   }
   html {
-    @apply dark;
     font-feature-settings: "cv11", "ss01", "ss03";
   }
   body {
