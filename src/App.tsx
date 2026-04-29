@@ -3,8 +3,20 @@ import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
+
 import Index from "./pages/Index.tsx";
 import NotFound from "./pages/NotFound.tsx";
+import Landing from "./pages/Landing.tsx";
+import Login from "./pages/Login.tsx";
+import { AppLayout } from "./components/layout/AppLayout";
+import Overview from "./pages/app/Overview";
+import Dashboards from "./pages/app/Dashboards";
+import Builder from "./pages/app/Builder";
+import Collections from "./pages/app/Collections";
+import AIStudio from "./pages/app/AIStudio";
+import Settings from "./pages/app/Settings";
+import Members from "./pages/app/Members";
+import Activity from "./pages/app/Activity";
 
 const queryClient = new QueryClient();
 
@@ -15,8 +27,20 @@ const App = () => (
       <Sonner />
       <BrowserRouter>
         <Routes>
-          <Route path="/" element={<Index />} />
-          {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
+          <Route path="/" element={<Landing />} />
+          <Route path="/login" element={<Login />} />
+          <Route path="/app" element={<AppLayout />}>
+            <Route index element={<Overview />} />
+            <Route path="dashboards" element={<Dashboards />} />
+            <Route path="dashboards/new" element={<Builder />} />
+            <Route path="dashboards/:id" element={<Builder />} />
+            <Route path="collections" element={<Collections />} />
+            <Route path="ai" element={<AIStudio />} />
+            <Route path="members" element={<Members />} />
+            <Route path="activity" element={<Activity />} />
+            <Route path="settings" element={<Settings />} />
+          </Route>
+          <Route path="/legacy" element={<Index />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </BrowserRouter>
