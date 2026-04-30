@@ -17,6 +17,8 @@ import AIStudio from "./pages/app/AIStudio";
 import Settings from "./pages/app/Settings";
 import Members from "./pages/app/Members";
 import Activity from "./pages/app/Activity";
+import { AuthProvider } from "./contexts/AuthContext";
+import { ProtectedRoute } from "./components/auth/ProtectedRoute";
 
 const queryClient = new QueryClient();
 
@@ -26,23 +28,32 @@ const App = () => (
       <Toaster />
       <Sonner />
       <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Landing />} />
-          <Route path="/login" element={<Login />} />
-          <Route path="/app" element={<AppLayout />}>
-            <Route index element={<Overview />} />
-            <Route path="dashboards" element={<Dashboards />} />
-            <Route path="dashboards/new" element={<Builder />} />
-            <Route path="dashboards/:id" element={<Builder />} />
-            <Route path="collections" element={<Collections />} />
-            <Route path="ai" element={<AIStudio />} />
-            <Route path="members" element={<Members />} />
-            <Route path="activity" element={<Activity />} />
-            <Route path="settings" element={<Settings />} />
-          </Route>
-          <Route path="/legacy" element={<Index />} />
-          <Route path="*" element={<NotFound />} />
-        </Routes>
+        <AuthProvider>
+          <Routes>
+            <Route path="/" element={<Landing />} />
+            <Route path="/login" element={<Login />} />
+            <Route
+              path="/app"
+              element={
+                <ProtectedRoute>
+                  <AppLayout />
+                </ProtectedRoute>
+              }
+            >
+              <Route index element={<Overview />} />
+              <Route path="dashboards" element={<Dashboards />} />
+              <Route path="dashboards/new" element={<Builder />} />
+              <Route path="dashboards/:id" element={<Builder />} />
+              <Route path="collections" element={<Collections />} />
+              <Route path="ai" element={<AIStudio />} />
+              <Route path="members" element={<Members />} />
+              <Route path="activity" element={<Activity />} />
+              <Route path="settings" element={<Settings />} />
+            </Route>
+            <Route path="/legacy" element={<Index />} />
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </AuthProvider>
       </BrowserRouter>
     </TooltipProvider>
   </QueryClientProvider>
