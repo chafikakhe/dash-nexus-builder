@@ -319,6 +319,8 @@ function CanvasDroppable({ children, gridRef }: { children: React.ReactNode; gri
 }
 
 export default function Builder() {
+  const { id: routeId } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const { create, update: updateDashboard } = useDashboards();
 
   const [dashboardId, setDashboardId] = useState<string | null>(routeId ?? null);
