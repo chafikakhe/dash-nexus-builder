@@ -1,5 +1,7 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import { Topbar } from "@/components/layout/Topbar";
+import { fetchDashboard, useDashboards } from "@/hooks/useDashboards";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -317,12 +319,59 @@ function CanvasDroppable({ children, gridRef }: { children: React.ReactNode; gri
 }
 
 export default function Builder() {
-  const [widgets, setWidgets] = useState<Widget[]>(initial);
-  const [selectedId, setSelectedId] = useState<string | null>("w3");
+  const { id: routeId } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const { create, update } = useDashboards();
+
+  const [dashboardId, setDashboardId] = useState<string | null>(routeId ?? null);
+  const [widgets, setWidgets] = useState<Widget[]>(routeId ? [] : initial);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [name, setName] = useState("Untitled dashboard");
+  const [saving, setSaving] = useState(false);
+  const [loadingDb, setLoadingDb] = useState(Boolean(routeId));
   const [activeDrag, setActiveDrag] = useState<{ kind: "palette"; type: WidgetType } | { kind: "widget"; id: string } | null>(null);
   const gridRef = useRef<HTMLDivElement>(null);
   const selected = widgets.find((w) => w.id === selectedId);
+
+  // Load existing dashboard
+  useEffect(() => {
+    if (!routeId) return;
+    let cancelled = false;
+    setLoadingDb(true);
+    fetchDashboard(routeId).then((db) => {
+      if (cancelled) return;
+      if (db) {
+        setName(db.name);
+        setDashboardId(db.id);
+        const layout = Array.isArray(db.layout) ? (db.layout as Widget[]) : [];
+        setWidgets(layout);
+      } else {
+        toast.error("Dashboard not found");
+        navigate("/app/dashboards", { replace: true });
+      }
+      setLoadingDb(false);
+    });
+    return () => { cancelled = true; };
+  }, [routeId, navigate]);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      if (dashboardId) {
+        await update(dashboardId, { name, layout: widgets });
+        toast.success("Dashboard saved");
+      } else {
+        const created = await create({ name, layout: widgets });
+        if (created) {
+          setDashboardId(created.id);
+          toast.success("Dashboard created");
+          navigate(`/app/dashboards/${created.id}`, { replace: true });
+        }
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
 
@@ -394,8 +443,8 @@ export default function Builder() {
             <Button variant="ghost" size="icon" className="h-8 w-8"><Redo2 className="h-4 w-4" /></Button>
             <div className="h-5 w-px bg-border mx-1" />
             <Button variant="outline" size="sm" className="gap-1.5"><Eye className="h-3.5 w-3.5" />Preview</Button>
-            <Button size="sm" className="gap-1.5 bg-gradient-primary shadow-glow" onClick={() => toast.success("Dashboard saved")}>
-              <Save className="h-3.5 w-3.5" />Save
+            <Button size="sm" className="gap-1.5 bg-gradient-primary shadow-glow" onClick={handleSave} disabled={saving || loadingDb}>
+              <Save className="h-3.5 w-3.5" />{saving ? "Saving…" : "Save"}
             </Button>
           </div>
         }
