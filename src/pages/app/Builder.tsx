@@ -358,7 +358,7 @@ export default function Builder() {
     setSaving(true);
     try {
       if (dashboardId) {
-        await update(dashboardId, { name, layout: widgets });
+        await updateDashboard(dashboardId, { name, layout: widgets });
         toast.success("Dashboard saved");
       } else {
         const created = await create({ name, layout: widgets });
