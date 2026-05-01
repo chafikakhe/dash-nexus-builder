@@ -19,6 +19,13 @@ import Members from "./pages/app/Members";
 import Activity from "./pages/app/Activity";
 import { AuthProvider } from "./contexts/AuthContext";
 import { ProtectedRoute } from "./components/auth/ProtectedRoute";
+import { AdminRoute } from "./components/auth/AdminRoute";
+import { AdminLayout } from "./components/layout/AdminLayout";
+import AdminStats from "./pages/admin/AdminStats";
+import AdminUsers from "./pages/admin/AdminUsers";
+import AdminOrgs from "./pages/admin/AdminOrgs";
+import AdminDashboards from "./pages/admin/AdminDashboards";
+import AdminActivity from "./pages/admin/AdminActivity";
 
 const queryClient = new QueryClient();
 
@@ -49,6 +56,20 @@ const App = () => (
               <Route path="members" element={<Members />} />
               <Route path="activity" element={<Activity />} />
               <Route path="settings" element={<Settings />} />
+            </Route>
+            <Route
+              path="/admin"
+              element={
+                <AdminRoute>
+                  <AdminLayout />
+                </AdminRoute>
+              }
+            >
+              <Route index element={<AdminStats />} />
+              <Route path="users" element={<AdminUsers />} />
+              <Route path="orgs" element={<AdminOrgs />} />
+              <Route path="dashboards" element={<AdminDashboards />} />
+              <Route path="activity" element={<AdminActivity />} />
             </Route>
             <Route path="/legacy" element={<Index />} />
             <Route path="*" element={<NotFound />} />
