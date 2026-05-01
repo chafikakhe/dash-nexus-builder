@@ -2,7 +2,7 @@ import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useState } from "react";
 import {
   LayoutDashboard, Database, Sparkles, Settings, PanelsTopLeft, Activity, Users,
-  Plus, ChevronsUpDown, Check, LogOut, Loader2,
+  Plus, ChevronsUpDown, Check, LogOut, Loader2, Shield,
 } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 import { toast } from "sonner";
+import { useIsAdmin } from "@/hooks/useIsAdmin";
 
 const nav = [
   { label: "Overview", to: "/app", icon: LayoutDashboard, end: true },
@@ -30,6 +31,7 @@ const nav = [
 
 export function AppSidebar() {
   const { orgs, currentOrgId, setCurrentOrgId, signOut, user, refreshOrgs } = useAuth();
+  const { isAdmin } = useIsAdmin();
   const current = orgs.find((o) => o.id === currentOrgId) ?? orgs[0];
   const { pathname } = useLocation();
   const navigate = useNavigate();
@@ -134,6 +136,20 @@ export function AppSidebar() {
             </NavLink>
           );
         })}
+        {isAdmin && (
+          <NavLink
+            to="/admin"
+            className={cn(
+              "flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition-all mt-2",
+              pathname.startsWith("/admin")
+                ? "bg-destructive/15 text-destructive border border-destructive/30"
+                : "text-destructive/80 hover:bg-destructive/10 border border-destructive/20"
+            )}
+          >
+            <Shield className="h-4 w-4" />
+            <span>Admin Panel</span>
+          </NavLink>
+        )}
       </nav>
 
       {/* Footer */}
