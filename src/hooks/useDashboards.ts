@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/contexts/AuthContext";
+import { logActivity } from "@/lib/activity";
 import { toast } from "sonner";
 
 export type Dashboard = {
@@ -53,6 +54,10 @@ export function useDashboards() {
         .single();
       if (error) { toast.error(error.message); return null; }
       setDashboards((prev) => [data as Dashboard, ...prev]);
+      logActivity({
+        orgId: currentOrgId, action: "dashboard.created",
+        targetType: "dashboard", targetId: (data as Dashboard).id, targetLabel: (data as Dashboard).name,
+      });
       return data as Dashboard;
     },
     [currentOrgId, user]
@@ -74,11 +79,16 @@ export function useDashboards() {
   );
 
   const remove = useCallback(async (id: string) => {
+    const target = dashboards.find((d) => d.id === id);
     const { error } = await supabase.from("dashboards").delete().eq("id", id);
     if (error) { toast.error(error.message); return false; }
     setDashboards((prev) => prev.filter((d) => d.id !== id));
+    logActivity({
+      orgId: currentOrgId, action: "dashboard.deleted",
+      targetType: "dashboard", targetId: id, targetLabel: target?.name,
+    });
     return true;
-  }, []);
+  }, [dashboards, currentOrgId]);
 
   return { dashboards, loading, refetch: fetchAll, create, update, remove };
 }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/contexts/AuthContext";
+import { logActivity } from "@/lib/activity";
 import { toast } from "sonner";
 
 export type FieldType = "text" | "number" | "boolean" | "select" | "date" | "image";
@@ -54,6 +55,10 @@ export function useCollections() {
       if (error) { toast.error(error.message); return null; }
       const col = { ...(data as any), schema: (data as any).schema ?? [] } as Collection;
       setCollections((prev) => [...prev, col]);
+      logActivity({
+        orgId: currentOrgId, action: "collection.created",
+        targetType: "collection", targetId: col.id, targetLabel: col.name,
+      });
       return col;
     },
     [currentOrgId, user]
@@ -67,11 +72,16 @@ export function useCollections() {
   }, []);
 
   const removeCollection = useCallback(async (id: string) => {
+    const target = collections.find((c) => c.id === id);
     const { error } = await supabase.from("collections").delete().eq("id", id);
     if (error) { toast.error(error.message); return false; }
     setCollections((prev) => prev.filter((c) => c.id !== id));
+    logActivity({
+      orgId: currentOrgId, action: "collection.deleted",
+      targetType: "collection", targetId: id, targetLabel: target?.name,
+    });
     return true;
-  }, []);
+  }, [collections, currentOrgId]);
 
   return { collections, loading, refetch: fetchAll, createCollection, updateSchema, removeCollection };
 }

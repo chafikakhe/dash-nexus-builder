@@ -1,95 +1,219 @@
+import { useEffect, useState } from "react";
 import { Topbar } from "@/components/layout/Topbar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
+import { Loader2 } from "lucide-react";
+import { supabase } from "@/lib/supabase";
+import { useAuth } from "@/contexts/AuthContext";
+import { logActivity } from "@/lib/activity";
+import { toast } from "sonner";
 
 export default function Settings() {
+  const { user, currentOrgId, orgs, refreshOrgs, signOut } = useAuth();
+  const currentOrg = orgs.find((o) => o.id === currentOrgId);
+  const myRole = currentOrg?.role;
+  const canManageOrg = myRole === "owner" || myRole === "admin";
+  const isOwner = myRole === "owner";
+
+  // Profile state
+  const [displayName, setDisplayName] = useState("");
+  const [avatarUrl, setAvatarUrl] = useState("");
+  const [profileLoading, setProfileLoading] = useState(true);
+  const [savingProfile, setSavingProfile] = useState(false);
+
+  // Workspace state
+  const [orgName, setOrgName] = useState("");
+  const [orgSlug, setOrgSlug] = useState("");
+  const [savingOrg, setSavingOrg] = useState(false);
+  const [deletingOrg, setDeletingOrg] = useState(false);
+
+  useEffect(() => {
+    if (!user) return;
+    setProfileLoading(true);
+    supabase
+      .from("profiles")
+      .select("display_name, avatar_url")
+      .eq("id", user.id)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (error) toast.error(error.message);
+        setDisplayName(data?.display_name ?? "");
+        setAvatarUrl(data?.avatar_url ?? "");
+        setProfileLoading(false);
+      });
+  }, [user]);
+
+  useEffect(() => {
+    setOrgName(currentOrg?.name ?? "");
+    setOrgSlug(currentOrg?.slug ?? "");
+  }, [currentOrg?.id, currentOrg?.name, currentOrg?.slug]);
+
+  const initials = (displayName || user?.email || "?")
+    .split(/[\s@.]+/).filter(Boolean).slice(0, 2).map((s) => s[0]?.toUpperCase()).join("");
+
+  const saveProfile = async () => {
+    if (!user) return;
+    setSavingProfile(true);
+    const { error } = await supabase
+      .from("profiles")
+      .update({ display_name: displayName, avatar_url: avatarUrl || null, updated_at: new Date().toISOString() })
+      .eq("id", user.id);
+    setSavingProfile(false);
+    if (error) { toast.error(error.message); return; }
+    toast.success("Profile updated");
+    logActivity({ orgId: currentOrgId, action: "profile.updated" });
+  };
+
+  const saveOrg = async () => {
+    if (!currentOrgId) return;
+    setSavingOrg(true);
+    const { error } = await supabase
+      .from("orgs")
+      .update({ name: orgName, slug: orgSlug })
+      .eq("id", currentOrgId);
+    setSavingOrg(false);
+    if (error) { toast.error(error.message); return; }
+    toast.success("Workspace updated");
+    logActivity({
+      orgId: currentOrgId, action: "workspace.updated",
+      targetType: "org", targetId: currentOrgId, targetLabel: orgName,
+    });
+    refreshOrgs();
+  };
+
+  const deleteOrg = async () => {
+    if (!currentOrgId || !isOwner) return;
+    if (!confirm(`Permanently delete "${orgName}"? This deletes ALL its dashboards, collections and data.`)) return;
+    setDeletingOrg(true);
+    const { error } = await supabase.from("orgs").delete().eq("id", currentOrgId);
+    setDeletingOrg(false);
+    if (error) { toast.error(error.message); return; }
+    toast.success("Workspace deleted");
+    await refreshOrgs();
+  };
+
   return (
     <>
-      <Topbar breadcrumb={[{ label: "Acme Inc." }, { label: "Settings" }]} />
+      <Topbar breadcrumb={[{ label: currentOrg?.name ?? "Workspace" }, { label: "Settings" }]} />
       <main className="flex-1 p-6 max-w-3xl animate-fade-in">
         <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
-        <p className="text-sm text-muted-foreground mt-1">Manage your account, workspace and preferences.</p>
+        <p className="text-sm text-muted-foreground mt-1">Manage your account and workspace.</p>
 
         <Tabs defaultValue="profile" className="mt-6">
           <TabsList>
             <TabsTrigger value="profile">Profile</TabsTrigger>
             <TabsTrigger value="workspace">Workspace</TabsTrigger>
-            <TabsTrigger value="appearance">Appearance</TabsTrigger>
-            <TabsTrigger value="notifications">Notifications</TabsTrigger>
-            <TabsTrigger value="api">API & Tokens</TabsTrigger>
+            <TabsTrigger value="account">Account</TabsTrigger>
           </TabsList>
 
-          <TabsContent value="profile" className="mt-6 space-y-6">
+          <TabsContent value="profile" className="mt-6">
             <div className="rounded-xl border border-border bg-card p-6 space-y-5">
-              <div className="flex items-center gap-4">
-                <div className="h-14 w-14 rounded-full bg-gradient-primary grid place-items-center text-lg font-bold text-primary-foreground shadow-glow">JD</div>
-                <Button variant="outline" size="sm">Upload new picture</Button>
-                <Button variant="ghost" size="sm" className="text-destructive">Remove</Button>
-              </div>
-              <Separator />
-              <div className="grid sm:grid-cols-2 gap-4">
-                <div className="space-y-2"><Label>Full name</Label><Input defaultValue="Jane Doe" /></div>
-                <div className="space-y-2"><Label>Email</Label><Input defaultValue="jane@dashforge.io" /></div>
-                <div className="space-y-2"><Label>Role</Label><Input defaultValue="Owner" disabled /></div>
-                <div className="space-y-2"><Label>Timezone</Label><Input defaultValue="Europe/Stockholm" /></div>
-              </div>
-              <div className="flex justify-end">
-                <Button className="bg-gradient-primary shadow-glow">Save changes</Button>
-              </div>
+              {profileLoading ? (
+                <div className="p-6 text-center text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin inline mr-2" /> Loading…
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-center gap-4">
+                    <div className="h-14 w-14 rounded-full bg-gradient-primary grid place-items-center text-lg font-bold text-primary-foreground shadow-glow overflow-hidden">
+                      {avatarUrl
+                        ? <img src={avatarUrl} alt="" className="h-full w-full object-cover" />
+                        : initials}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      Paste an avatar URL below to change your picture.
+                    </div>
+                  </div>
+                  <Separator />
+                  <div className="grid sm:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label>Display name</Label>
+                      <Input value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Email</Label>
+                      <Input value={user?.email ?? ""} disabled />
+                    </div>
+                    <div className="space-y-2 sm:col-span-2">
+                      <Label>Avatar URL</Label>
+                      <Input value={avatarUrl} onChange={(e) => setAvatarUrl(e.target.value)} placeholder="https://…" />
+                    </div>
+                  </div>
+                  <div className="flex justify-end">
+                    <Button onClick={saveProfile} disabled={savingProfile} className="bg-gradient-primary shadow-glow">
+                      {savingProfile && <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />}
+                      Save changes
+                    </Button>
+                  </div>
+                </>
+              )}
             </div>
           </TabsContent>
 
           <TabsContent value="workspace" className="mt-6">
             <div className="rounded-xl border border-border bg-card p-6 space-y-4">
-              <div className="space-y-2"><Label>Workspace name</Label><Input defaultValue="Acme Inc." /></div>
-              <div className="space-y-2"><Label>Slug</Label><Input defaultValue="acme" /></div>
-              <Separator />
-              <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4">
-                <h4 className="text-sm font-semibold text-destructive">Danger zone</h4>
-                <p className="text-xs text-muted-foreground mt-1 mb-3">Deleting this workspace is permanent.</p>
-                <Button variant="outline" size="sm" className="border-destructive/50 text-destructive hover:bg-destructive/10">Delete workspace</Button>
-              </div>
+              {!currentOrg ? (
+                <div className="text-sm text-muted-foreground">No workspace selected.</div>
+              ) : (
+                <>
+                  <div className="space-y-2">
+                    <Label>Workspace name</Label>
+                    <Input value={orgName} onChange={(e) => setOrgName(e.target.value)} disabled={!canManageOrg} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Slug</Label>
+                    <Input value={orgSlug} onChange={(e) => setOrgSlug(e.target.value)} disabled={!canManageOrg} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Plan</Label>
+                    <Input value={currentOrg.plan} disabled />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Your role</Label>
+                    <Input value={currentOrg.role} disabled className="capitalize" />
+                  </div>
+                  {canManageOrg && (
+                    <div className="flex justify-end">
+                      <Button onClick={saveOrg} disabled={savingOrg} className="bg-gradient-primary shadow-glow">
+                        {savingOrg && <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />}
+                        Save workspace
+                      </Button>
+                    </div>
+                  )}
+                  {isOwner && (
+                    <>
+                      <Separator />
+                      <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4">
+                        <h4 className="text-sm font-semibold text-destructive">Danger zone</h4>
+                        <p className="text-xs text-muted-foreground mt-1 mb-3">
+                          Deleting this workspace is permanent and removes all its data.
+                        </p>
+                        <Button
+                          variant="outline" size="sm"
+                          onClick={deleteOrg} disabled={deletingOrg}
+                          className="border-destructive/50 text-destructive hover:bg-destructive/10"
+                        >
+                          {deletingOrg && <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />}
+                          Delete workspace
+                        </Button>
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
             </div>
           </TabsContent>
 
-          <TabsContent value="appearance" className="mt-6">
+          <TabsContent value="account" className="mt-6">
             <div className="rounded-xl border border-border bg-card p-6 space-y-4">
-              {[
-                ["Dark mode", "Use dark theme across the app", true],
-                ["Reduce motion", "Disable non-essential animations", false],
-                ["Compact layout", "Tighter spacing for dense data", false],
-              ].map(([t, d, v]) => (
-                <div key={t as string} className="flex items-center justify-between">
-                  <div><div className="text-sm font-medium">{t}</div><div className="text-xs text-muted-foreground">{d}</div></div>
-                  <Switch defaultChecked={v as boolean} />
-                </div>
-              ))}
-            </div>
-          </TabsContent>
-
-          <TabsContent value="notifications" className="mt-6">
-            <div className="rounded-xl border border-border bg-card p-6 space-y-4">
-              {["Weekly digest", "Mention notifications", "Workspace activity", "Product updates"].map((n) => (
-                <div key={n} className="flex items-center justify-between">
-                  <div className="text-sm font-medium">{n}</div>
-                  <Switch defaultChecked />
-                </div>
-              ))}
-            </div>
-          </TabsContent>
-
-          <TabsContent value="api" className="mt-6">
-            <div className="rounded-xl border border-border bg-card p-6">
-              <Label>Personal access token</Label>
-              <div className="flex gap-2 mt-2">
-                <Input value="dfg_••••••••••••••••••••••" readOnly className="font-mono text-xs" />
-                <Button variant="outline">Rotate</Button>
+              <div className="space-y-1">
+                <div className="text-sm font-medium">Sign out</div>
+                <div className="text-xs text-muted-foreground">End your session on this device.</div>
               </div>
-              <p className="text-xs text-muted-foreground mt-2">Use this token to authenticate API requests against the DashForge REST API.</p>
+              <Button variant="outline" onClick={signOut}>Sign out</Button>
             </div>
           </TabsContent>
         </Tabs>
