@@ -2,13 +2,9 @@ import { createClient } from "@supabase/supabase-js";
 
 /**
  * DashForge — Supabase client.
- *
- * 👉 Paste your project's URL and ANON (publishable) key below.
- *    Both values are safe to ship in client code; RLS protects your data.
- *    Find them in: Supabase dashboard → Project Settings → API.
  */
-const SUPABASE_URL = "https://YOUR-PROJECT-REF.supabase.co";
-const SUPABASE_ANON_KEY = "YOUR-ANON-PUBLIC-KEY";
+const SUPABASE_URL = "https://mrccuruzsqqfnezvrbtc.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_1vjHU_2ZDiR2VjkH-dfIdA_hwJbS3L2";
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
