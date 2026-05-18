@@ -1,6 +1,7 @@
 import { Search, Bell, Command as CmdIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAppStore } from "@/store/app";
+import { useAuth } from "@/contexts/AuthContext";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -18,6 +19,10 @@ interface TopbarProps {
 
 export function Topbar({ title, breadcrumb, actions }: TopbarProps) {
   const setPaletteOpen = useAppStore((s) => s.setPaletteOpen);
+  const { user, signOut } = useAuth();
+  
+  const displayName = user?.user_metadata?.display_name ?? user?.email?.split("@")[0] ?? "User";
+  const userInitial = user?.email?.[0].toUpperCase() ?? "?";
 
   return (
     <header className="sticky top-0 z-20 h-14 flex items-center gap-3 px-5 border-b border-border/60 bg-background/70 backdrop-blur-xl">
@@ -58,13 +63,13 @@ export function Topbar({ title, breadcrumb, actions }: TopbarProps) {
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <button className="h-8 w-8 rounded-full bg-gradient-primary grid place-items-center text-xs font-bold text-primary-foreground shadow-glow">
-            JD
+            {userInitial}
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-52">
           <DropdownMenuLabel>
-            <div className="text-sm font-medium">Jane Doe</div>
-            <div className="text-xs text-muted-foreground font-normal">jane@dashforge.io</div>
+            <div className="text-sm font-medium">{displayName}</div>
+            <div className="text-xs text-muted-foreground font-normal">{user?.email ?? "—"}</div>
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
           <DropdownMenuItem>Profile</DropdownMenuItem>
@@ -73,7 +78,7 @@ export function Topbar({ title, breadcrumb, actions }: TopbarProps) {
             <CmdIcon className="h-3.5 w-3.5 mr-2" /> Command palette
           </DropdownMenuItem>
           <DropdownMenuSeparator />
-          <DropdownMenuItem className="text-destructive">Sign out</DropdownMenuItem>
+          <DropdownMenuItem className="text-destructive" onClick={signOut}>Sign out</DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
     </header>

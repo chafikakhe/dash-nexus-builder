@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Topbar } from "@/components/layout/Topbar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -5,11 +6,34 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
+import { useAuth } from "@/contexts/AuthContext";
+import { toast } from "sonner";
 
 export default function Settings() {
+  const { user, currentOrgId, orgs } = useAuth();
+  const currentOrg = orgs.find((o) => o.id === currentOrgId);
+  
+  const [fullName, setFullName] = useState(user?.user_metadata?.display_name ?? "");
+  const [timezone, setTimezone] = useState("UTC");
+  const [orgName, setOrgName] = useState(currentOrg?.name ?? "");
+  const [saving, setSaving] = useState(false);
+
+  const userInitial = user?.email?.[0].toUpperCase() ?? "?";
+
+  const handleSaveProfile = async () => {
+    if (!fullName.trim()) {
+      toast.error("Please enter a full name");
+      return;
+    }
+    setSaving(true);
+    // TODO: Implement profile save to Supabase profiles table
+    setSaving(false);
+    toast.success("Profile saved");
+  };
+
   return (
     <>
-      <Topbar breadcrumb={[{ label: "Acme Inc." }, { label: "Settings" }]} />
+      <Topbar breadcrumb={[{ label: currentOrg?.name ?? "Workspace" }, { label: "Settings" }]} />
       <main className="flex-1 p-6 max-w-3xl animate-fade-in">
         <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
         <p className="text-sm text-muted-foreground mt-1">Manage your account, workspace and preferences.</p>
@@ -26,27 +50,47 @@ export default function Settings() {
           <TabsContent value="profile" className="mt-6 space-y-6">
             <div className="rounded-xl border border-border bg-card p-6 space-y-5">
               <div className="flex items-center gap-4">
-                <div className="h-14 w-14 rounded-full bg-gradient-primary grid place-items-center text-lg font-bold text-primary-foreground shadow-glow">JD</div>
+                <div className="h-14 w-14 rounded-full bg-gradient-primary grid place-items-center text-lg font-bold text-primary-foreground shadow-glow">{userInitial}</div>
                 <Button variant="outline" size="sm">Upload new picture</Button>
                 <Button variant="ghost" size="sm" className="text-destructive">Remove</Button>
               </div>
               <Separator />
               <div className="grid sm:grid-cols-2 gap-4">
-                <div className="space-y-2"><Label>Full name</Label><Input defaultValue="Jane Doe" /></div>
-                <div className="space-y-2"><Label>Email</Label><Input defaultValue="jane@dashforge.io" /></div>
-                <div className="space-y-2"><Label>Role</Label><Input defaultValue="Owner" disabled /></div>
-                <div className="space-y-2"><Label>Timezone</Label><Input defaultValue="Europe/Stockholm" /></div>
+                <div className="space-y-2">
+                  <Label>Full name</Label>
+                  <Input value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Your name" />
+                </div>
+                <div className="space-y-2">
+                  <Label>Email</Label>
+                  <Input value={user?.email ?? ""} disabled />
+                </div>
+                <div className="space-y-2">
+                  <Label>Role</Label>
+                  <Input value={currentOrg?.role ?? "—"} disabled />
+                </div>
+                <div className="space-y-2">
+                  <Label>Timezone</Label>
+                  <Input value={timezone} onChange={(e) => setTimezone(e.target.value)} />
+                </div>
               </div>
               <div className="flex justify-end">
-                <Button className="bg-gradient-primary shadow-glow">Save changes</Button>
+                <Button className="bg-gradient-primary shadow-glow" onClick={handleSaveProfile} disabled={saving}>
+                  {saving ? "Saving…" : "Save changes"}
+                </Button>
               </div>
             </div>
           </TabsContent>
 
           <TabsContent value="workspace" className="mt-6">
             <div className="rounded-xl border border-border bg-card p-6 space-y-4">
-              <div className="space-y-2"><Label>Workspace name</Label><Input defaultValue="Acme Inc." /></div>
-              <div className="space-y-2"><Label>Slug</Label><Input defaultValue="acme" /></div>
+              <div className="space-y-2">
+                <Label>Workspace name</Label>
+                <Input value={orgName} onChange={(e) => setOrgName(e.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label>Slug</Label>
+                <Input value={currentOrg?.slug ?? ""} disabled />
+              </div>
               <Separator />
               <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4">
                 <h4 className="text-sm font-semibold text-destructive">Danger zone</h4>

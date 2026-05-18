@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Sparkles, ArrowRight, Loader2 } from "lucide-react";
 import { z } from "zod";
-import { supabase, isSupabaseConfigured } from "@/lib/supabase";
+import { supabase, isSupabaseConfigured, clearInvalidStoredSession } from "@/lib/supabase";
 import { toast } from "sonner";
 
 const signInSchema = z.object({
@@ -35,13 +35,34 @@ export default function Login() {
     setError(null);
     const parsed = signInSchema.safeParse(signin);
     if (!parsed.success) { setError(parsed.error.issues[0].message); return; }
-    if (!isSupabaseConfigured) { setError("Add your Supabase URL + anon key in src/lib/supabase.ts"); return; }
+    if (!isSupabaseConfigured) { setError("Add your Supabase URL + anon key in .env.local"); return; }
     setLoading(true);
-    const { error } = await supabase.auth.signInWithPassword(parsed.data);
-    setLoading(false);
-    if (error) { setError(error.message); return; }
-    toast.success("Welcome back");
-    navigate(from, { replace: true });
+    setError(null);
+    try {
+      // Remove any stale/malformed session to avoid triggering bad refresh requests
+      clearInvalidStoredSession();
+      const { data, error } = await supabase.auth.signInWithPassword(parsed.data);
+      console.debug("[login] signInWithPassword result", { data, error });
+      if (error) {
+        setError(error.message ?? "Sign in failed");
+        setLoading(false);
+        return;
+      }
+
+      // If a session is returned immediately, navigate to the app.
+      if (data?.session) {
+        toast.success("Welcome back");
+        navigate(from, { replace: true });
+      } else {
+        // No session means email confirmation or other flow is required
+        toast.success("Check your inbox to confirm your email");
+      }
+    } catch (e: any) {
+      console.debug("[login] unexpected error", e);
+      setError(e?.message ?? String(e));
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleSignUp = async (e: React.FormEvent) => {
@@ -49,7 +70,7 @@ export default function Login() {
     setError(null);
     const parsed = signUpSchema.safeParse(signup);
     if (!parsed.success) { setError(parsed.error.issues[0].message); return; }
-    if (!isSupabaseConfigured) { setError("Add your Supabase URL + anon key in src/lib/supabase.ts"); return; }
+    if (!isSupabaseConfigured) { setError("Add your Supabase URL + anon key in .env.local"); return; }
     setLoading(true);
     const { data, error } = await supabase.auth.signUp({
       email: parsed.data.email,
@@ -67,6 +88,7 @@ export default function Login() {
       const { error: orgErr } = await supabase.from("orgs").insert({
         name: parsed.data.workspace,
         slug,
+        owner_id: data.user!.id,
         created_by: data.user!.id,
       });
       if (orgErr) console.error("[signup] org create", orgErr);

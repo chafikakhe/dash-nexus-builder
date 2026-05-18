@@ -18,14 +18,25 @@ export default function Overview() {
   const [memberCount, setMemberCount] = useState<number | null>(null);
 
   useEffect(() => {
-    if (!currentOrgId) return;
+    if (!currentOrgId) {
+      setCollectionCount(0);
+      setMemberCount(0);
+      return;
+    }
+
     (async () => {
-      const [{ count: cCount }, { count: mCount }] = await Promise.all([
-        supabase.from("collections").select("*", { count: "exact", head: true }).eq("org_id", currentOrgId),
-        supabase.from("org_members").select("*", { count: "exact", head: true }).eq("org_id", currentOrgId),
-      ]);
-      setCollectionCount(cCount ?? 0);
-      setMemberCount(mCount ?? 0);
+      try {
+        const [{ count: cCount }, { count: mCount }] = await Promise.all([
+          supabase.from("collections").select("*", { count: "exact", head: true }).eq("org_id", currentOrgId),
+          supabase.from("org_members").select("*", { count: "exact", head: true }).eq("org_id", currentOrgId),
+        ]);
+        setCollectionCount(cCount ?? 0);
+        setMemberCount(mCount ?? 0);
+      } catch (error) {
+        console.error("[overview] stats load failed", error);
+        setCollectionCount(0);
+        setMemberCount(0);
+      }
     })();
   }, [currentOrgId]);
 

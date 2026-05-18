@@ -13,6 +13,11 @@ export type Dashboard = {
   updated_at: string;
 };
 
+/**
+ * Hook for managing dashboards.
+ * Includes comprehensive logging and error handling for debugging database operations.
+ * If RLS policies are blocking operations, errors will show "Permission denied" message.
+ */
 export function useDashboards() {
   const { currentOrgId, user } = useAuth();
   const [dashboards, setDashboards] = useState<Dashboard[]>([]);
@@ -20,71 +25,221 @@ export function useDashboards() {
 
   const fetchAll = useCallback(async () => {
     if (!currentOrgId) {
+      console.debug("[dashboards] No currentOrgId, clearing dashboards");
       setDashboards([]);
       setLoading(false);
       return;
     }
     setLoading(true);
-    const { data, error } = await supabase
-      .from("dashboards")
-      .select("*")
-      .eq("org_id", currentOrgId)
-      .order("updated_at", { ascending: false });
-    if (error) toast.error(error.message);
-    else setDashboards((data ?? []) as Dashboard[]);
-    setLoading(false);
+    try {
+      console.debug("[dashboards] Fetching dashboards for org:", currentOrgId);
+      const { data, error } = await supabase
+        .from("dashboards")
+        .select("*")
+        .eq("org_id", currentOrgId)
+        .order("updated_at", { ascending: false });
+      if (error) {
+        console.error("[dashboards] Fetch error:", error.code, error.message, error);
+        toast.error(`Failed to load dashboards: ${error.message}`);
+      } else {
+        console.debug("[dashboards] Fetched", data?.length ?? 0, "dashboards");
+        setDashboards((data ?? []) as Dashboard[]);
+      }
+    } catch (e: any) {
+      console.error("[dashboards] Unexpected fetch error:", e);
+      toast.error("Failed to load dashboards");
+    } finally {
+      setLoading(false);
+    }
   }, [currentOrgId]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
+  /**
+   * Create a new dashboard with optional initial layout.
+   * The dashboard will be associated with the current org and created_by user.
+   * If RLS blocks this, you likely lack owner/admin/editor role in org_members.
+   */
   const create = useCallback(
     async (input: { name: string; description?: string; layout?: any }) => {
-      if (!currentOrgId || !user) return null;
-      const { data, error } = await supabase
-        .from("dashboards")
-        .insert({
-          org_id: currentOrgId,
-          name: input.name,
-          description: input.description ?? null,
-          layout: input.layout ?? [],
-          created_by: user.id,
-        })
-        .select("*")
-        .single();
-      if (error) { toast.error(error.message); return null; }
-      setDashboards((prev) => [data as Dashboard, ...prev]);
-      return data as Dashboard;
+      if (!currentOrgId) {
+        console.warn("[dashboards] create: No currentOrgId");
+        toast.error("No workspace selected");
+        return null;
+      }
+      if (!user) {
+        console.warn("[dashboards] create: No user logged in");
+        toast.error("Not logged in");
+        return null;
+      }
+      console.debug("[dashboards] Creating dashboard:", { name: input.name, description: input.description, orgId: currentOrgId, userId: user.id });
+
+      // Verify membership/role before creating to avoid RLS blocks
+      try {
+        const { data: membership, error: membErr } = await supabase
+          .from("org_members")
+          .select("role")
+          .eq("org_id", currentOrgId)
+          .eq("user_id", user.id)
+          .maybeSingle();
+        if (membErr) console.error("[dashboards] membership check error", membErr);
+        if (!membership) {
+          toast.error("You don't have access to this workspace");
+          return null;
+        }
+        if (membership.role === "viewer") {
+          toast.error("You need editor permissions to create dashboards");
+          return null;
+        }
+      } catch (e) {
+        console.error("[dashboards] membership check unexpected error", e);
+      }
+      try {
+        const { data, error } = await supabase
+          .from("dashboards")
+          .insert({
+            org_id: currentOrgId,
+            name: input.name,
+            description: input.description ?? null,
+            layout: input.layout ?? [],
+            created_by: user.id,
+          })
+          .select("*")
+          .single();
+        if (error) {
+          console.error("[dashboards] Insert error:", error.code, error.message, error);
+          if (error.code === "PGRST301" || error.message.includes("row level security")) {
+            toast.error("Permission denied. Check your workspace role (need owner/admin/editor).");
+          } else {
+            toast.error(`Failed to create dashboard: ${error.message}`);
+          }
+          return null;
+        }
+        console.debug("[dashboards] Dashboard created successfully:", data.id);
+        setDashboards((prev) => [data as Dashboard, ...prev]);
+        return data as Dashboard;
+      } catch (e: any) {
+        console.error("[dashboards] Unexpected create error:", e);
+        toast.error("Failed to create dashboard");
+        return null;
+      }
     },
     [currentOrgId, user]
   );
 
+  /**
+   * Update an existing dashboard (name, description, or layout).
+   * Called when saving dashboard layout changes from the builder.
+   * If RLS blocks this, you likely lack owner/admin/editor role.
+   */
   const update = useCallback(
     async (id: string, patch: Partial<Pick<Dashboard, "name" | "description" | "layout">>) => {
-      const { data, error } = await supabase
-        .from("dashboards")
-        .update({ ...patch, updated_at: new Date().toISOString() })
-        .eq("id", id)
-        .select("*")
-        .maybeSingle();
-      if (error) { toast.error(error.message); return null; }
-      if (data) setDashboards((prev) => prev.map((d) => (d.id === id ? (data as Dashboard) : d)));
-      return data as Dashboard | null;
+      console.debug("[dashboards] Updating dashboard:", id, { patch });
+      if (!currentOrgId) {
+        toast.error("No workspace selected");
+        return null;
+      }
+      if (!user) {
+        toast.error("Not logged in");
+        return null;
+      }
+
+      // Verify membership/role before updating
+      try {
+        const { data: membership, error: membErr } = await supabase
+          .from("org_members")
+          .select("role")
+          .eq("org_id", currentOrgId)
+          .eq("user_id", user.id)
+          .maybeSingle();
+        if (membErr) console.error("[dashboards] membership check error", membErr);
+        if (!membership) {
+          toast.error("You don't have access to this workspace");
+          return null;
+        }
+        if (membership.role === "viewer") {
+          toast.error("You need editor permissions to update dashboards");
+          return null;
+        }
+      } catch (e) {
+        console.error("[dashboards] membership check unexpected error", e);
+      }
+
+      try {
+        const { data, error } = await supabase
+          .from("dashboards")
+          .update({ ...patch, updated_at: new Date().toISOString() })
+          .eq("id", id)
+          .select("*")
+          .maybeSingle();
+        if (error) {
+          console.error("[dashboards] Update error:", error.code, error.message, error);
+          if (error.code === "PGRST301" || error.message.includes("row level security")) {
+            toast.error("Permission denied. Check your workspace role (need owner/admin/editor).");
+          } else {
+            toast.error(`Failed to save dashboard: ${error.message}`);
+          }
+          return null;
+        }
+        console.debug("[dashboards] Dashboard updated successfully");
+        if (data) {
+          setDashboards((prev) => prev.map((d) => (d.id === id ? (data as Dashboard) : d)));
+        }
+        return data as Dashboard | null;
+      } catch (e: any) {
+        console.error("[dashboards] Unexpected update error:", e);
+        toast.error("Failed to save dashboard");
+        return null;
+      }
     },
-    []
+    [currentOrgId, user]
   );
 
   const remove = useCallback(async (id: string) => {
-    const { error } = await supabase.from("dashboards").delete().eq("id", id);
-    if (error) { toast.error(error.message); return false; }
-    setDashboards((prev) => prev.filter((d) => d.id !== id));
-    return true;
+    console.debug("[dashboards] Deleting dashboard:", id);
+    try {
+      const { error } = await supabase.from("dashboards").delete().eq("id", id);
+      if (error) {
+        console.error("[dashboards] Delete error:", error.message, error);
+        if (error.code === "PGRST301" || error.message.includes("row level security")) {
+          toast.error("Permission denied. Check your workspace role (need owner/admin).");
+        } else {
+          toast.error(`Failed to delete dashboard: ${error.message}`);
+        }
+        return false;
+      }
+      console.debug("[dashboards] Dashboard deleted successfully");
+      setDashboards((prev) => prev.filter((d) => d.id !== id));
+      return true;
+    } catch (e: any) {
+      console.error("[dashboards] Unexpected delete error:", e);
+      toast.error("Failed to delete dashboard");
+      return false;
+    }
   }, []);
 
   return { dashboards, loading, refetch: fetchAll, create, update, remove };
 }
 
+/**
+ * Fetch a single dashboard by ID.
+ * Used by the Builder to load existing dashboards.
+ * Safe to use from server-side code (checks if window exists).
+ */
 export async function fetchDashboard(id: string): Promise<Dashboard | null> {
-  const { data, error } = await supabase.from("dashboards").select("*").eq("id", id).maybeSingle();
-  if (error) { toast.error(error.message); return null; }
-  return data as Dashboard | null;
+  console.debug("[dashboards] Fetching dashboard:", id);
+  try {
+    const { data, error } = await supabase.from("dashboards").select("*").eq("id", id).maybeSingle();
+    if (error) {
+      console.error("[dashboards] fetchDashboard error:", error.message, error);
+      toast.error(`Failed to load dashboard: ${error.message}`);
+      return null;
+    }
+    console.debug("[dashboards] Dashboard loaded successfully");
+    return data as Dashboard | null;
+  } catch (e: any) {
+    console.error("[dashboards] Unexpected fetchDashboard error:", e);
+    toast.error("Failed to load dashboard");
+    return null;
+  }
 }

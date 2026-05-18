@@ -2,7 +2,7 @@ import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useState } from "react";
 import {
   LayoutDashboard, Database, Sparkles, Settings, PanelsTopLeft, Activity, Users,
-  Plus, ChevronsUpDown, Check, LogOut, Loader2, Shield,
+  Plus, ChevronsUpDown, Check, LogOut, Loader2, Shield, Bell,
 } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
@@ -26,6 +26,7 @@ const nav = [
   { label: "Collections", to: "/app/collections", icon: Database },
   { label: "AI Studio", to: "/app/ai", icon: Sparkles },
   { label: "Activity", to: "/app/activity", icon: Activity },
+  { label: "Notifications", to: "/app/notifications", icon: Bell },
   { label: "Members", to: "/app/members", icon: Users },
 ];
 
@@ -53,11 +54,24 @@ export function AppSidebar() {
       "-" + Math.random().toString(36).slice(2, 6);
     const { data, error } = await supabase
       .from("orgs")
-      .insert({ name: newName.trim(), slug, created_by: user.id })
+      .insert({ name: newName.trim(), slug, owner_id: user.id, created_by: user.id })
       .select("id")
       .single();
     setCreating(false);
     if (error) { toast.error(error.message); return; }
+    // Immediately ensure the creator is added to org_members to avoid RLS race
+    try {
+      const { error: memberErr } = await supabase
+        .from("org_members")
+        .insert({ org_id: data?.id, user_id: user.id, role: "owner" })
+        .select();
+      if (memberErr) {
+        // Not fatal - server trigger may handle it. Log for debugging.
+        console.error("[sidebar] org_members insert error", memberErr);
+      }
+    } catch (e) {
+      console.error("[sidebar] org_members insert unexpected error", e);
+    }
     await refreshOrgs();
     if (data?.id) setCurrentOrgId(data.id);
     setOpenNew(false);

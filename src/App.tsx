@@ -17,6 +17,7 @@ import AIStudio from "./pages/app/AIStudio";
 import Settings from "./pages/app/Settings";
 import Members from "./pages/app/Members";
 import Activity from "./pages/app/Activity";
+import Notifications from "./pages/app/Notifications";
 import { AuthProvider } from "./contexts/AuthContext";
 import { ProtectedRoute } from "./components/auth/ProtectedRoute";
 import { AdminRoute } from "./components/auth/AdminRoute";
@@ -26,6 +27,7 @@ import AdminUsers from "./pages/admin/AdminUsers";
 import AdminOrgs from "./pages/admin/AdminOrgs";
 import AdminDashboards from "./pages/admin/AdminDashboards";
 import AdminActivity from "./pages/admin/AdminActivity";
+import Invite from "./pages/Invite";
 
 const queryClient = new QueryClient();
 
@@ -39,6 +41,7 @@ const App = () => (
           <Routes>
             <Route path="/" element={<Landing />} />
             <Route path="/login" element={<Login />} />
+            <Route path="/invite/:token" element={<Invite />} />
             <Route
               path="/app"
               element={
@@ -53,6 +56,7 @@ const App = () => (
               <Route path="dashboards/:id" element={<Builder />} />
               <Route path="collections" element={<Collections />} />
               <Route path="ai" element={<AIStudio />} />
+              <Route path="notifications" element={<Notifications />} />
               <Route path="members" element={<Members />} />
               <Route path="activity" element={<Activity />} />
               <Route path="settings" element={<Settings />} />

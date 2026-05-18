@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Topbar } from "@/components/layout/Topbar";
 import { fetchDashboard, useDashboards } from "@/hooks/useDashboards";
+import { useCollections } from "@/hooks/useCollections";
+import { supabase } from "@/lib/supabase";
+import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -16,6 +19,13 @@ import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis,
   ResponsiveContainer, Tooltip, CartesianGrid,
 } from "recharts";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import {
@@ -28,7 +38,22 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 
 type WidgetType = "stat" | "line" | "bar" | "pie" | "table" | "gauge";
-type Widget = { id: string; type: WidgetType; title: string; w: number; h: number };
+type WidgetConfig = {
+  value?: string;
+  delta?: string;
+  valueKey?: string | null;
+  aggregate?: "count" | "sum" | "avg" | "max" | "min";
+  series?: Array<{ label: string; value: number }>;
+  segments?: Array<{ name: string; value: number }>;
+  columns?: string[];
+  rows?: Array<Record<string, any>>;
+  activity?: Array<{ who: string; what: string; when: string }>;
+  collection_id?: string | null;
+  xKey?: string | null;
+  yKey?: string | null;
+  groupKey?: string | null;
+};
+type Widget = { id: string; type: WidgetType; title: string; w: number; h: number; config?: WidgetConfig };
 
 const palette: { type: WidgetType; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { type: "stat", label: "Stat card", icon: Gauge },
@@ -39,96 +64,156 @@ const palette: { type: WidgetType; label: string; icon: React.ComponentType<{ cl
   { type: "gauge", label: "Activity feed", icon: Activity },
 ];
 
-const series = Array.from({ length: 12 }).map((_, i) => ({
-  d: `${i + 1}`, v: Math.round(40 + Math.sin(i / 2) * 20 + i * 4),
-}));
-const pieData = [
-  { name: "Web", value: 540 }, { name: "iOS", value: 320 },
-  { name: "Android", value: 220 }, { name: "API", value: 110 },
-];
-const pieColors = ["hsl(var(--primary))", "hsl(var(--primary-glow))", "hsl(243 60% 40%)", "hsl(243 30% 30%)"];
+const initial: Widget[] = [];
 
-const initial: Widget[] = [
-  { id: "w1", type: "stat", title: "MRR", w: 3, h: 2 },
-  { id: "w2", type: "stat", title: "Active users", w: 3, h: 2 },
-  { id: "w3", type: "line", title: "Revenue trend", w: 6, h: 4 },
-  { id: "w4", type: "bar", title: "Signups by channel", w: 6, h: 4 },
-  { id: "w5", type: "pie", title: "Traffic sources", w: 6, h: 4 },
-  { id: "w6", type: "table", title: "Latest customers", w: 6, h: 4 },
-];
+const defaultWidgetConfig = (type: WidgetType): WidgetConfig | undefined => {
+  switch (type) {
+    case "stat":
+      return { value: "", delta: "", collection_id: null, valueKey: null, aggregate: "count", columns: [], rows: [] };
+    case "line":
+      return { series: [], collection_id: null, xKey: null, yKey: null, columns: [], rows: [] };
+    case "bar":
+      return { series: [], collection_id: null, xKey: null, yKey: null, columns: [], rows: [] };
+    case "pie":
+      return { segments: [], collection_id: null, xKey: null, yKey: null, columns: [], rows: [] };
+    case "table":
+      return { columns: [], rows: [], collection_id: null };
+    case "gauge":
+      return { activity: [], collection_id: null };
+    default:
+      return undefined;
+  }
+};
 
 const ROW_H = 56;
 const GAP = 12;
 
-function WidgetBody({ type }: { type: WidgetType }) {
-  if (type === "stat") {
+function WidgetBody({ widget }: { widget: Widget }) {
+  const config = widget.config;
+  const noData = (
+    <div className="h-full flex items-center justify-center text-xs text-muted-foreground">
+      No data configured for this widget.
+    </div>
+  );
+
+  if (widget.type === "stat") {
+    const rows = config?.rows ?? [];
+    const valueKey = config?.valueKey;
+    const aggregate = config?.aggregate ?? "count";
+    let displayValue = config?.value ?? "";
+
+    if (config?.collection_id && valueKey) {
+      const values = rows.map((row) => Number(row[valueKey])).filter((num) => !Number.isNaN(num));
+      if (aggregate === "count") {
+        displayValue = String(rows.length);
+      } else if (values.length) {
+        switch (aggregate) {
+          case "sum":
+            displayValue = String(values.reduce((total, num) => total + num, 0));
+            break;
+          case "avg":
+            displayValue = String(values.reduce((total, num) => total + num, 0) / values.length);
+            break;
+          case "max":
+            displayValue = String(Math.max(...values));
+            break;
+          case "min":
+            displayValue = String(Math.min(...values));
+            break;
+          default:
+            displayValue = String(values.length);
+        }
+      }
+    }
+
     return (
       <div className="h-full flex flex-col justify-end">
-        <div className="text-3xl font-bold tracking-tight">$48,290</div>
-        <div className="text-xs text-success mt-1">+12.4% vs last week</div>
+        <div className="text-3xl font-bold tracking-tight">{displayValue || "—"}</div>
+        {config?.delta ? <div className="text-xs text-success mt-1">{config.delta}</div> : null}
       </div>
     );
   }
-  if (type === "line") {
+
+  if (widget.type === "line" || widget.type === "bar") {
+    const rows = config?.rows ?? [];
+    const xKey = config?.xKey;
+    const yKey = config?.yKey;
+    const data = xKey && yKey ? rows.map((row) => ({ label: String(row[xKey] ?? ""), value: Number(row[yKey] ?? 0) })) : [];
+    if (!xKey || !yKey || !data.length) return noData;
     return (
       <ResponsiveContainer width="100%" height="100%">
-        <AreaChart data={series}>
-          <defs>
-            <linearGradient id="ln" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity={0.5} />
-              <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity={0} />
-            </linearGradient>
-          </defs>
-          <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-          <XAxis dataKey="d" fontSize={10} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} />
-          <YAxis fontSize={10} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} />
-          <Tooltip contentStyle={{ background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 11 }} />
-          <Area type="monotone" dataKey="v" stroke="hsl(var(--primary))" strokeWidth={2} fill="url(#ln)" />
-        </AreaChart>
+        {widget.type === "line" ? (
+          <AreaChart data={data}>
+            <defs>
+              <linearGradient id="ln" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity={0.5} />
+                <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+            <XAxis dataKey="label" fontSize={10} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} />
+            <YAxis fontSize={10} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} />
+            <Tooltip contentStyle={{ background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 11 }} />
+            <Area type="monotone" dataKey="value" stroke="hsl(var(--primary))" strokeWidth={2} fill="url(#ln)" />
+          </AreaChart>
+        ) : (
+          <BarChart data={data}>
+            <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+            <XAxis dataKey="label" fontSize={10} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} />
+            <YAxis fontSize={10} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} />
+            <Tooltip contentStyle={{ background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 11 }} />
+            <Bar dataKey="value" fill="hsl(var(--primary))" radius={[3, 3, 0, 0]} />
+          </BarChart>
+        )}
       </ResponsiveContainer>
     );
   }
-  if (type === "bar") {
-    return (
-      <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={series}>
-          <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-          <XAxis dataKey="d" fontSize={10} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} />
-          <Tooltip contentStyle={{ background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 11 }} />
-          <Bar dataKey="v" fill="hsl(var(--primary))" radius={[3, 3, 0, 0]} />
-        </BarChart>
-      </ResponsiveContainer>
-    );
-  }
-  if (type === "pie") {
+
+  if (widget.type === "pie") {
+    const rows = config?.rows ?? [];
+    const categoryKey = config?.xKey;
+    const valueKey = config?.yKey;
+    const segments = categoryKey && valueKey ? Object.values(rows.reduce((acc, row) => {
+      const category = String(row[categoryKey] ?? "Unknown");
+      const value = Number(row[valueKey] ?? 0);
+      if (!acc[category]) acc[category] = { name: category, value: 0 };
+      acc[category].value += value;
+      return acc;
+    }, {} as Record<string, { name: string; value: number }>)) : [];
+    if (!categoryKey || !valueKey || !segments.length) return noData;
+    const colors = ["hsl(var(--primary))", "hsl(var(--primary-glow))", "hsl(243 60% 40%)", "hsl(243 30% 30%)"];
     return (
       <ResponsiveContainer width="100%" height="100%">
         <PieChart>
-          <Pie data={pieData} dataKey="value" innerRadius="55%" outerRadius="80%" paddingAngle={2} stroke="hsl(var(--background))">
-            {pieData.map((_, i) => <Cell key={i} fill={pieColors[i]} />)}
+          <Pie data={segments} dataKey="value" nameKey="name" innerRadius="50%" outerRadius="70%" paddingAngle={2} stroke="hsl(var(--background))">
+            {segments.map((segment, i) => <Cell key={segment.name} fill={colors[i % colors.length]} />)}
           </Pie>
           <Tooltip contentStyle={{ background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 11 }} />
         </PieChart>
       </ResponsiveContainer>
     );
   }
-  if (type === "table") {
+
+  if (widget.type === "table") {
+    const rows = config?.rows ?? [];
+    const columns = config?.columns ?? [];
+    if (!rows.length || !columns.length) return noData;
     return (
       <div className="h-full overflow-auto scrollbar-thin text-xs">
-        <table className="w-full">
+        <table className="w-full border-collapse">
           <thead className="text-muted-foreground border-b border-border">
-            <tr><th className="text-left py-1.5 font-medium">Name</th><th className="text-left font-medium">Plan</th><th className="text-right font-medium">MRR</th></tr>
+            <tr>
+              {columns.map((column) => (
+                <th key={column} className="text-left py-1.5 font-medium">{column}</th>
+              ))}
+            </tr>
           </thead>
           <tbody>
-            {[
-              ["Acme Co.", "Pro", "$890"],
-              ["Northwind", "Enterprise", "$4,200"],
-              ["Initech", "Pro", "$890"],
-              ["Hooli", "Free", "$0"],
-              ["Stark Industries", "Enterprise", "$5,800"],
-            ].map(([n, p, m]) => (
-              <tr key={n} className="border-b border-border/50 hover:bg-secondary/40">
-                <td className="py-1.5">{n}</td><td className="text-muted-foreground">{p}</td><td className="text-right font-medium">{m}</td>
+            {rows.map((row, rowIndex) => (
+              <tr key={row.id ?? rowIndex} className="border-b border-border/50 hover:bg-secondary/40">
+                {columns.map((column) => (
+                  <td key={column} className="py-1.5">{String(row[column] ?? "")}</td>
+                ))}
               </tr>
             ))}
           </tbody>
@@ -136,23 +221,25 @@ function WidgetBody({ type }: { type: WidgetType }) {
       </div>
     );
   }
-  return (
-    <div className="space-y-2 text-xs">
-      {[
-        ["jane@acme.com", "upgraded plan", "2m"],
-        ["dev@stark.io", "deployed v1.4", "8m"],
-        ["sara@hooli.com", "invited 3 members", "1h"],
-        ["api", "synced 12k records", "2h"],
-      ].map(([who, what, when], i) => (
-        <div key={i} className="flex items-center gap-2">
-          <div className="h-1.5 w-1.5 rounded-full bg-primary" />
-          <span className="font-medium truncate">{who}</span>
-          <span className="text-muted-foreground truncate flex-1">{what}</span>
-          <span className="text-muted-foreground">{when}</span>
-        </div>
-      ))}
-    </div>
-  );
+
+  if (widget.type === "gauge") {
+    const activity = config?.activity ?? [];
+    if (!activity.length) return noData;
+    return (
+      <div className="space-y-2 text-xs">
+        {activity.map((item, i) => (
+          <div key={i} className="flex items-center gap-2">
+            <div className="h-1.5 w-1.5 rounded-full bg-primary" />
+            <span className="font-medium truncate">{item.who}</span>
+            <span className="text-muted-foreground truncate flex-1">{item.what}</span>
+            <span className="text-muted-foreground">{item.when}</span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  return noData;
 }
 
 /* -------- Palette draggable -------- */
@@ -275,24 +362,24 @@ function SortableWidget({
       </div>
       <div className="absolute inset-x-3 top-9 bottom-3 pointer-events-none">
         <div className="h-full w-full pointer-events-auto">
-          <WidgetBody type={widget.type} />
-        </div>
-      </div>
+          <WidgetBody widget={widget} />
 
-      {/* Resize handles */}
-      <div
-        onPointerDown={(e) => startResize(e, "x")}
-        className="absolute top-2 bottom-2 -right-0.5 w-1.5 cursor-ew-resize opacity-0 group-hover:opacity-100 hover:bg-primary/40 rounded"
-      />
-      <div
-        onPointerDown={(e) => startResize(e, "y")}
-        className="absolute left-2 right-2 -bottom-0.5 h-1.5 cursor-ns-resize opacity-0 group-hover:opacity-100 hover:bg-primary/40 rounded"
-      />
-      <div
-        onPointerDown={(e) => startResize(e, "xy")}
-        className="absolute -bottom-0.5 -right-0.5 h-3 w-3 cursor-nwse-resize opacity-0 group-hover:opacity-100"
-      >
-        <div className="absolute bottom-0.5 right-0.5 h-2 w-2 border-r-2 border-b-2 border-primary/70 rounded-sm" />
+          {/* Resize handles */}
+          <div
+            onPointerDown={(e) => startResize(e, "x")}
+            className="absolute top-2 bottom-2 -right-0.5 w-1.5 cursor-ew-resize opacity-0 group-hover:opacity-100 hover:bg-primary/40 rounded"
+          />
+          <div
+            onPointerDown={(e) => startResize(e, "y")}
+            className="absolute left-2 right-2 -bottom-0.5 h-1.5 cursor-ns-resize opacity-0 group-hover:opacity-100 hover:bg-primary/40 rounded"
+          />
+          <div
+            onPointerDown={(e) => startResize(e, "xy")}
+            className="absolute -bottom-0.5 -right-0.5 h-3 w-3 cursor-nwse-resize opacity-0 group-hover:opacity-100"
+          >
+            <div className="absolute bottom-0.5 right-0.5 h-2 w-2 border-r-2 border-b-2 border-primary/70 rounded-sm" />
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -322,6 +409,8 @@ export default function Builder() {
   const { id: routeId } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { create, update: updateDashboard } = useDashboards();
+  const { currentOrgId, user } = useAuth();
+  const { collections } = useCollections();
 
   const [dashboardId, setDashboardId] = useState<string | null>(routeId ?? null);
   const [widgets, setWidgets] = useState<Widget[]>(routeId ? [] : initial);
@@ -329,6 +418,8 @@ export default function Builder() {
   const [name, setName] = useState("Untitled dashboard");
   const [saving, setSaving] = useState(false);
   const [loadingDb, setLoadingDb] = useState(Boolean(routeId));
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewWidgets, setPreviewWidgets] = useState<Widget[]>([]);
   const [activeDrag, setActiveDrag] = useState<{ kind: "palette"; type: WidgetType } | { kind: "widget"; id: string } | null>(null);
   const gridRef = useRef<HTMLDivElement>(null);
   const selected = widgets.find((w) => w.id === selectedId);
@@ -355,19 +446,41 @@ export default function Builder() {
   }, [routeId, navigate]);
 
   const handleSave = async () => {
+    console.debug("[builder] Save clicked", { dashboardId, name, widgetCount: widgets.length });
+    if (!user) {
+      toast.error("You must be signed in to save dashboards");
+      return;
+    }
+    if (!currentOrgId) {
+      toast.error("Select a workspace before saving");
+      return;
+    }
     setSaving(true);
     try {
       if (dashboardId) {
-        await updateDashboard(dashboardId, { name, layout: widgets });
-        toast.success("Dashboard saved");
+        console.debug("[builder] Updating existing dashboard", { id: dashboardId, widgetCount: widgets.length });
+        const updated = await updateDashboard(dashboardId, { name, layout: widgets });
+        if (updated) {
+          console.debug("[builder] Dashboard updated successfully");
+          toast.success("Dashboard saved");
+        } else {
+          console.warn("[builder] updateDashboard returned null/error (check error message in console)");
+        }
       } else {
+        console.debug("[builder] Creating new dashboard", { name, widgetCount: widgets.length });
         const created = await create({ name, layout: widgets });
         if (created) {
+          console.debug("[builder] Dashboard created successfully", { id: created.id });
           setDashboardId(created.id);
           toast.success("Dashboard created");
           navigate(`/app/dashboards/${created.id}`, { replace: true });
+        } else {
+          console.warn("[builder] create returned null/error (check error message in console)");
         }
       }
+    } catch (e: any) {
+      console.error("[builder] Unexpected save error:", e);
+      toast.error("Failed to save dashboard - check browser console for details");
     } finally {
       setSaving(false);
     }
@@ -408,7 +521,14 @@ export default function Builder() {
     if (activeData?.source === "palette" && activeData.type) {
       const id = `w_${Date.now()}`;
       const def = palette.find((p) => p.type === activeData.type)!;
-      const newW: Widget = { id, type: activeData.type, title: def.label, w: 4, h: 3 };
+      const newW: Widget = {
+        id,
+        type: activeData.type,
+        title: def.label,
+        w: 4,
+        h: 3,
+        config: defaultWidgetConfig(activeData.type),
+      };
       if (over.id === "canvas") {
         setWidgets((ws) => [...ws, newW]);
       } else {
@@ -430,6 +550,59 @@ export default function Builder() {
     }
   };
 
+  const loadSampleForWidget = async (widget: Widget) => {
+    const colId = widget.config?.collection_id;
+    if (!colId) {
+      toast.error("Select a collection first");
+      return;
+    }
+    try {
+      const { data, error } = await supabase
+        .from("collection_records")
+        .select("data")
+        .eq("collection_id", colId)
+        .limit(15);
+      if (error) {
+        console.error("Failed to load sample records", error);
+        toast.error("Failed to load sample records");
+        return;
+      }
+      const rows = (data ?? []).map((r: any) => r.data ?? {});
+      const cols = rows.length ? Object.keys(rows[0]) : [];
+      update(widget.id, {
+        config: {
+          ...(widget.config || {}),
+          rows,
+          columns: cols,
+          collection_id: colId,
+        },
+      });
+      toast.success("Loaded sample records");
+    } catch (e) {
+      console.error("Unexpected error loading sample records", e);
+      toast.error("Failed to load sample records");
+    }
+  };
+
+  const handlePreview = async () => {
+    // Build preview widgets by fetching samples for widgets with a collection
+    const built: Widget[] = await Promise.all(widgets.map(async (w) => {
+      if (w.config?.collection_id) {
+        try {
+          const { data } = await supabase.from("collection_records").select("data").eq("collection_id", w.config!.collection_id).limit(10);
+          const rows = (data ?? []).map((r: any) => r.data ?? {});
+          const cols = rows.length ? Object.keys(rows[0]) : [];
+          return { ...w, config: { ...(w.config || {}), rows, columns: cols } };
+        } catch (e) {
+          return w;
+        }
+      }
+      return w;
+    }));
+    setPreviewWidgets(built);
+    setPreviewOpen(true);
+  };
+
   return (
     <>
       <Topbar
@@ -442,7 +615,7 @@ export default function Builder() {
             <Button variant="ghost" size="icon" className="h-8 w-8"><Undo2 className="h-4 w-4" /></Button>
             <Button variant="ghost" size="icon" className="h-8 w-8"><Redo2 className="h-4 w-4" /></Button>
             <div className="h-5 w-px bg-border mx-1" />
-            <Button variant="outline" size="sm" className="gap-1.5"><Eye className="h-3.5 w-3.5" />Preview</Button>
+            <Button variant="outline" size="sm" className="gap-1.5" onClick={handlePreview}><Eye className="h-3.5 w-3.5" />Preview</Button>
             <Button size="sm" className="gap-1.5 bg-gradient-primary shadow-glow" onClick={handleSave} disabled={saving || loadingDb}>
               <Save className="h-3.5 w-3.5" />{saving ? "Saving…" : "Save"}
             </Button>
@@ -537,16 +710,172 @@ export default function Builder() {
                 <div className="rounded-lg border border-border bg-secondary/40 p-3 text-xs text-muted-foreground space-y-1">
                   <div>Type · <span className="text-foreground capitalize">{selected.type}</span></div>
                   <div>Size · <span className="text-foreground">{selected.w} × {selected.h}</span></div>
-                  <div>Data source · <span className="text-foreground">PostgreSQL</span></div>
+                  <div className="space-y-2">
+                    <div className="text-[11px] text-muted-foreground">Data source</div>
+                    {(selected.type === 'table' || selected.type === 'line' || selected.type === 'bar' || selected.type === 'pie' || selected.type === 'stat') ? (
+                      <div className="flex flex-col gap-2">
+                        <Select onValueChange={(val) => update(selected.id, { config: { ...(selected.config || {}), collection_id: val, xKey: null, yKey: null, columns: [], rows: [] } })}>
+                          <SelectTrigger>
+                            <SelectValue>{selected.config?.collection_id ? (collections.find(c => c.id === selected.config!.collection_id)?.name ?? 'Selected collection') : 'Select collection'}</SelectValue>
+                          </SelectTrigger>
+                          <SelectContent>
+                            {collections.map((c) => (
+                              <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        {selected.type !== 'stat' ? (
+                          selected.config?.collection_id ? (
+                            <div className="space-y-3">
+                              {(selected.type === 'line' || selected.type === 'bar') && (
+                                <>
+                                  <div className="space-y-2">
+                                    <Label className="text-xs">X axis</Label>
+                                    <Select onValueChange={(val) => update(selected.id, { config: { ...(selected.config || {}), xKey: val } })}>
+                                      <SelectTrigger>
+                                        <SelectValue>{selected.config?.xKey ?? 'Select X axis'}</SelectValue>
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        {(selected.config?.columns ?? []).map((column) => (
+                                          <SelectItem key={column} value={column}>{column}</SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                  <div className="space-y-2">
+                                    <Label className="text-xs">Y axis</Label>
+                                    <Select onValueChange={(val) => update(selected.id, { config: { ...(selected.config || {}), yKey: val } })}>
+                                      <SelectTrigger>
+                                        <SelectValue>{selected.config?.yKey ?? 'Select Y axis'}</SelectValue>
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        {(selected.config?.columns ?? []).map((column) => (
+                                          <SelectItem key={column} value={column}>{column}</SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                </>
+                              )}
+                              {selected.type === 'pie' && (
+                                <>
+                                  <div className="space-y-2">
+                                    <Label className="text-xs">Category field</Label>
+                                    <Select onValueChange={(val) => update(selected.id, { config: { ...(selected.config || {}), xKey: val } })}>
+                                      <SelectTrigger>
+                                        <SelectValue>{selected.config?.xKey ?? 'Select category field'}</SelectValue>
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        {(selected.config?.columns ?? []).map((column) => (
+                                          <SelectItem key={column} value={column}>{column}</SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                  <div className="space-y-2">
+                                    <Label className="text-xs">Value field</Label>
+                                    <Select onValueChange={(val) => update(selected.id, { config: { ...(selected.config || {}), yKey: val } })}>
+                                      <SelectTrigger>
+                                        <SelectValue>{selected.config?.yKey ?? 'Select value field'}</SelectValue>
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        {(selected.config?.columns ?? []).map((column) => (
+                                          <SelectItem key={column} value={column}>{column}</SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                </>
+                              )}
+                              <div className="flex gap-2">
+                                <Button size="sm" variant="outline" onClick={() => loadSampleForWidget(selected)}>Load sample</Button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex gap-2">
+                              <Button size="sm" variant="outline" onClick={() => loadSampleForWidget(selected)}>Load sample</Button>
+                            </div>
+                          )
+                        ) : null}
+                      </div>
+                    ) : (
+                      <div className="text-foreground">PostgreSQL</div>
+                    )}
+                  </div>
                 </div>
-                <div className="flex gap-2">
-                  <Button variant="outline" size="sm" className="flex-1" onClick={() => duplicate(selected.id)}>
-                    <Copy className="h-3.5 w-3.5 mr-1.5" /> Duplicate
-                  </Button>
-                  <Button variant="outline" size="sm" className="flex-1 text-destructive hover:text-destructive" onClick={() => remove(selected.id)}>
-                    <Trash2 className="h-3.5 w-3.5 mr-1.5" /> Delete
-                  </Button>
-                </div>
+                {selected.type === 'stat' ? (
+                  <div className="space-y-3">
+                    {selected.config?.collection_id ? (
+                      <>
+                        <div className="space-y-2">
+                          <Label className="text-xs">Metric field</Label>
+                          <Select onValueChange={(val) => update(selected.id, { config: { ...(selected.config || {}), valueKey: val } })}>
+                            <SelectTrigger>
+                              <SelectValue>{selected.config?.valueKey ?? 'Select metric field'}</SelectValue>
+                            </SelectTrigger>
+                            <SelectContent>
+                              {(selected.config?.columns ?? []).map((column) => (
+                                <SelectItem key={column} value={column}>{column}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-xs">Aggregation</Label>
+                          <Select onValueChange={(val) => update(selected.id, { config: { ...(selected.config || {}), aggregate: val as WidgetConfig['aggregate'] } })}>
+                            <SelectTrigger>
+                              <SelectValue>{selected.config?.aggregate ?? 'Select aggregation'}</SelectValue>
+                            </SelectTrigger>
+                            <SelectContent>
+                              {['count', 'sum', 'avg', 'max', 'min'].map((option) => (
+                                <SelectItem key={option} value={option}>{option}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-xs">Delta</Label>
+                          <Input
+                            value={selected.config?.delta ?? ""}
+                            onChange={(e) => update(selected.id, { config: { ...(selected.config || {}), delta: e.target.value } })}
+                            className="h-8 text-sm"
+                          />
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="space-y-2">
+                          <Label className="text-xs">Value</Label>
+                          <Input
+                            value={selected.config?.value ?? ""}
+                            onChange={(e) => update(selected.id, { config: { ...(selected.config || {}), value: e.target.value } })}
+                            className="h-8 text-sm"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-xs">Delta</Label>
+                          <Input
+                            value={selected.config?.delta ?? ""}
+                            onChange={(e) => update(selected.id, { config: { ...(selected.config || {}), delta: e.target.value } })}
+                            className="h-8 text-sm"
+                          />
+                        </div>
+                      </>
+                    )}
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="outline" onClick={() => loadSampleForWidget(selected)}>Load sample</Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex gap-2">
+                    <Button variant="outline" size="sm" className="flex-1" onClick={() => duplicate(selected.id)}>
+                      <Copy className="h-3.5 w-3.5 mr-1.5" /> Duplicate
+                    </Button>
+                    <Button variant="outline" size="sm" className="flex-1 text-destructive hover:text-destructive" onClick={() => remove(selected.id)}>
+                      <Trash2 className="h-3.5 w-3.5 mr-1.5" /> Delete
+                    </Button>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="text-center text-xs text-muted-foreground pt-12">
@@ -577,6 +906,28 @@ export default function Builder() {
             );
           })()}
         </DragOverlay>
+        {previewOpen && (
+          <div className="fixed inset-0 z-50 grid place-items-center bg-black/40">
+            <div className="bg-card rounded-lg p-4 max-w-4xl w-full max-h-[80vh] overflow-auto">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold">Preview</h3>
+                <div className="flex gap-2">
+                  <Button size="sm" variant="outline" onClick={() => setPreviewOpen(false)}>Close</Button>
+                </div>
+              </div>
+              <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
+                {previewWidgets.map((w) => (
+                  <div key={w.id} className="p-2 border rounded bg-card/80">
+                    <div className="text-xs font-semibold mb-1">{w.title}</div>
+                    <div style={{ height: 220 }}>
+                      <WidgetBody widget={w} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
       </DndContext>
     </>
   );
