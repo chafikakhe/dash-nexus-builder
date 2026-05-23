@@ -17,7 +17,7 @@ type InviteRecord = {
   status: string;
   created_at: string;
   accepted_at: string | null;
-  orgs: { id: string; name: string } | null;
+  orgs: { id: string; name: string }[] | null;
 };
 
 export default function Invite() {
@@ -31,9 +31,17 @@ export default function Invite() {
 
   useEffect(() => {
     if (!token) return;
+    if (authLoading) return;
+
     setLoading(true);
     setError(null);
     setInvite(null);
+
+    if (!user) {
+      setError("Please sign in with the invited email to view this invitation.");
+      setLoading(false);
+      return;
+    }
 
     (async () => {
       const { data, error: fetchError } = await supabase
@@ -52,14 +60,14 @@ export default function Invite() {
       }
       setLoading(false);
     })();
-  }, [token]);
+  }, [token, authLoading, user]);
 
   const handleAccept = async () => {
     if (!token || !user) return;
     setAccepting(true);
     setError(null);
 
-    const { error: acceptError } = await supabase.rpc("accept_invitation", { token });
+    const { error: acceptError } = await supabase.rpc("accept_invitation", { p_token: token });
     if (acceptError) {
       console.error("[invite] accept error", acceptError);
       setError(acceptError.message || "Unable to accept invitation.");
@@ -115,7 +123,7 @@ export default function Invite() {
                   <div className="grid h-10 w-10 place-items-center rounded-full bg-primary/10 text-primary">I</div>
                   <div>
                     <p className="text-sm uppercase tracking-[0.24em] text-muted-foreground">Workspace invitation</p>
-                    <h1 className="text-2xl font-semibold">{invite.orgs?.name ?? "Workspace"}</h1>
+                    <h1 className="text-2xl font-semibold">{invite.orgs?.[0]?.name ?? "Workspace"}</h1>
                   </div>
                 </div>
                 <p className="text-sm text-muted-foreground">

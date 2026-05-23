@@ -17,6 +17,21 @@ type Invitation = {
   token: string;
 };
 
+type NotificationItem = {
+  id: string;
+  type: string;
+  payload: {
+    invite_id?: string;
+    token?: string;
+    role?: string;
+    invited_by?: string;
+    recipient_email?: string;
+    [key: string]: any;
+  };
+  created_at: string;
+  orgs: { id: string; name: string }[] | null;
+};
+
 export default function Notifications() {
   const { user } = useAuth();
   const [invitations, setInvitations] = useState<Invitation[]>([]);
@@ -29,20 +44,86 @@ export default function Notifications() {
       setLoading(false);
       return;
     }
+
     setLoading(true);
+    const normalizedEmail = user.email?.toLowerCase() ?? "";
+    console.log("[notifications] loading invites for email", normalizedEmail);
+
+    let inviteItems: Invitation[] = [];
+    const notificationSelect = () =>
+      supabase
+        .from("notifications")
+        .select("id, type, payload, created_at, orgs:org_id(id, name)")
+        .order("created_at", { ascending: false });
+
+    const notificationsByEmail = normalizedEmail
+      ? await notificationSelect().eq("recipient_email", normalizedEmail)
+      : null;
+    const notificationsById = await notificationSelect().eq("recipient_id", user.id);
+
+    if ((notificationsByEmail?.error == null || notificationsByEmail === null) && !notificationsById.error) {
+      const combinedRows = [
+        ...(notificationsByEmail?.data ?? []),
+        ...(notificationsById.data ?? []),
+      ] as any[];
+      const unique = new Map<string, any>();
+      combinedRows.forEach((item) => {
+        if (!unique.has(item.id)) unique.set(item.id, item);
+      });
+
+      inviteItems = Array.from(unique.values())
+        .filter((item) => item.type === "workspace_invite" && item.payload?.token)
+        .map((item) => {
+          const org = Array.isArray(item.orgs) ? item.orgs[0] : null;
+          return {
+            id: item.payload.invite_id ?? item.id,
+            email: item.payload.recipient_email ?? normalizedEmail,
+            role: item.payload.role ?? "member",
+            status: "pending",
+            created_at: item.created_at,
+            orgs: org ? { id: org.id, name: org.name } : null,
+            token: item.payload.token,
+          };
+        });
+
+      if (inviteItems.length > 0) {
+        setInvitations(inviteItems);
+        setLoading(false);
+        return;
+      }
+    }
+
+    if (notificationsByEmail?.error || notificationsById.error) {
+      console.warn("[notifications] fallback to invitations query", {
+        byEmailError: notificationsByEmail?.error,
+        byIdError: notificationsById.error,
+      });
+    }
+
     const { data, error } = await supabase
       .from("invitations")
       .select("id, email, role, status, created_at, orgs:org_id(id, name), token")
       .eq("status", "pending")
+      .eq("email", normalizedEmail)
       .order("created_at", { ascending: false });
 
+    console.log("[notifications] invitations response", { data, error });
     if (error) {
       console.error("[notifications] load invitations error:", error);
       toast.error("Failed to load your invitations.");
       setInvitations([]);
     } else {
-      setInvitations((data ?? []) as Invitation[]);
+      setInvitations(((data ?? []) as any[]).map((row) => ({
+        id: row.id,
+        email: row.email,
+        role: row.role,
+        status: row.status,
+        created_at: row.created_at,
+        orgs: Array.isArray(row.orgs) ? row.orgs[0] : null,
+        token: row.token,
+      })));
     }
+
     setLoading(false);
   };
 
@@ -52,7 +133,7 @@ export default function Notifications() {
 
   const handleAccept = async (token: string) => {
     setAccepting(token);
-    const { error } = await supabase.rpc("accept_invitation", { token });
+    const { error } = await supabase.rpc("accept_invitation", { p_token: token });
     if (error) {
       console.error("[notifications] accept invitation error:", error);
       toast.error(error.message || "Unable to accept the invitation.");

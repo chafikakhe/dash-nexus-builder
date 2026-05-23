@@ -7,11 +7,11 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Plus, MoreHorizontal, Loader2, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { supabase } from "@/lib/supabase";
 import { sendInviteEmail } from "@/lib/email";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
 import { useDashboards, type Dashboard } from "@/hooks/useDashboards";
+import { fetchOrgMembers, fetchOrgInvitations, createInvitation } from "@/lib/workspace-queries";
 
 type Member = {
   user_id: string;
@@ -69,51 +69,23 @@ export default function Members() {
       return;
     }
 
-    setLoading(true);
+    try {
+      setLoading(true);
 
-    const [membersResult, invitesResult] = await Promise.all([
-      supabase
-        .from("org_members")
-        .select("user_id, role, profiles:user_id(email, display_name)")
-        .eq("org_id", currentOrgId)
-        .order("role", { ascending: false }),
-      supabase
-        .from("invitations")
-        .select("id, email, role, status, created_at, invited_by, inviter:invited_by(email, display_name), token")
-        .eq("org_id", currentOrgId)
-        .order("created_at", { ascending: false }),
-    ]);
+      // Fetch members and invitations in parallel
+      const [membersData, invitationsData] = await Promise.all([
+        fetchOrgMembers(currentOrgId),
+        fetchOrgInvitations(currentOrgId),
+      ]);
 
-    if (membersResult.error) {
-      console.error("[members] fetch error:", membersResult.error);
-      toast.error("Failed to load members");
-    } else {
-      setMembers(((membersResult.data ?? []) as any[]).map((m) => ({
-        user_id: m.user_id,
-        role: m.role,
-        email: m.profiles?.email ?? "—",
-        display_name: m.profiles?.display_name ?? m.profiles?.email?.split("@")[0] ?? "User",
-      })));
+      setMembers(membersData);
+      setPendingInvites(invitationsData);
+    } catch (error) {
+      console.error("[members] Error loading data:", error);
+      toast.error("Failed to load members and invitations");
+    } finally {
+      setLoading(false);
     }
-
-    if (invitesResult.error) {
-      console.error("[members] invites fetch error:", invitesResult.error);
-      toast.error("Failed to load invitations");
-    } else {
-      setPendingInvites(((invitesResult.data ?? []) as any[]).map((invite) => ({
-        id: invite.id,
-        email: invite.email,
-        role: invite.role,
-        status: invite.status,
-        created_at: invite.created_at,
-        invited_by: invite.invited_by,
-        inviter_name: invite.inviter?.display_name ?? invite.inviter?.email?.split("@")[0] ?? "Unknown",
-        inviter_email: invite.inviter?.email ?? "—",
-        token: invite.token,
-      })));
-    }
-
-    setLoading(false);
   };
 
   useEffect(() => {
@@ -135,49 +107,60 @@ export default function Members() {
 
     setInviteLoading(true);
 
-    const { data: insertedInvite, error } = await supabase.rpc("create_invitation", {
-      _email: normalizedEmail,
-      _org_id: currentOrgId,
-      _role: inviteRole,
-      _invited_by: user.id,
-      _dashboard_ids: inviteDashboardIds,
-    });
-
-    if (error || !insertedInvite) {
-      console.error("[members] invite error:", error);
-      toast.error(error?.message || "Failed to create invitation.");
-      setInviteLoading(false);
-      return;
-    }
-
-    const inviteLink = `${window.location.origin}/invite/${insertedInvite.token}`;
-    const workspaceName = currentOrg?.name ?? "workspace";
-
     try {
-      await sendInviteEmail(normalizedEmail, workspaceName, inviteLink);
-      toast.success("Invitation email sent.");
-    } catch (emailError) {
-      console.error("[members] invite email error:", emailError);
-      toast.error("Invite saved, but sending email failed. Try again later.");
-    }
+      const insertedInvite = await createInvitation(
+        normalizedEmail,
+        currentOrgId,
+        inviteRole as "owner" | "admin" | "member" | "editor" | "viewer",
+        inviteDashboardIds
+      );
 
-    setInviteEmail("");
-    setInviteRole("member");
-    setInviteDashboardIds([]);
-    setIsInviteOpen(false);
-    await loadMembersAndInvites();
-    setInviteLoading(false);
+      if (!insertedInvite) {
+        toast.error("Failed to create invitation.");
+        setInviteLoading(false);
+        return;
+      }
+
+      console.log("[members] invite created", insertedInvite);
+      const inviteLink = `${window.location.origin}/invite/${insertedInvite.token}`;
+      const workspaceName = currentOrg?.name ?? "workspace";
+
+      try {
+        await sendInviteEmail(normalizedEmail, workspaceName, inviteLink);
+        toast.success("Invitation email sent.");
+      } catch (emailError) {
+        console.error("[members] invite email error:", emailError);
+        toast.error("Invite saved, but sending email failed. Try again later.");
+      }
+
+      setInviteEmail("");
+      setInviteRole("member");
+      setInviteDashboardIds([]);
+      setIsInviteOpen(false);
+      await loadMembersAndInvites();
+    } catch (error) {
+      console.error("[members] invite error:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to create invitation.");
+    } finally {
+      setInviteLoading(false);
+    }
   };
 
   const handleRevoke = async (inviteId: string) => {
-    const { error } = await supabase.from("invitations").delete().eq("id", inviteId);
-    if (error) {
+    try {
+      const { supabase } = await import("@/lib/supabase");
+      const { error } = await supabase.from("invitations").delete().eq("id", inviteId);
+      if (error) {
+        console.error("[members] revoke error:", error);
+        toast.error("Unable to revoke invitation.");
+        return;
+      }
+      toast.success("Invitation revoked.");
+      await loadMembersAndInvites();
+    } catch (error) {
       console.error("[members] revoke error:", error);
       toast.error("Unable to revoke invitation.");
-      return;
     }
-    toast.success("Invitation revoked.");
-    await loadMembersAndInvites();
   };
 
   return (

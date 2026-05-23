@@ -54,6 +54,78 @@ create table if not exists public.invitations (
 );
 alter table public.invitations enable row level security;
 
+create table if not exists public.notifications (
+  id uuid primary key default gen_random_uuid(),
+  recipient_id uuid references auth.users(id) on delete cascade,
+  recipient_email text not null,
+  org_id uuid references public.orgs(id) on delete cascade,
+  type text not null check (type in ('workspace_invite','system','invite_accepted')),
+  payload jsonb not null default '{}'::jsonb,
+  is_read boolean not null default false,
+  created_at timestamptz not null default now()
+);
+alter table public.notifications enable row level security;
+
+drop policy if exists "notifications_select" on public.notifications;
+create policy "notifications_select" on public.notifications
+  for select to authenticated
+  using (
+    recipient_id = auth.uid()
+    or lower(recipient_email) = lower(auth.jwt() ->> 'email')
+  );
+
+drop policy if exists "notifications_insert" on public.notifications;
+create policy "notifications_insert" on public.notifications
+  for insert to authenticated
+  with check (
+    recipient_id = auth.uid()
+    or lower(recipient_email) = lower(auth.jwt() ->> 'email')
+  );
+
+drop policy if exists "notifications_update" on public.notifications;
+create policy "notifications_update" on public.notifications
+  for update to authenticated
+  using (recipient_id = auth.uid())
+  with check (recipient_id = auth.uid());
+
+drop policy if exists "notifications_delete" on public.notifications;
+create policy "notifications_delete" on public.notifications
+  for delete to authenticated
+  using (recipient_id = auth.uid());
+
+create or replace function public.create_notification(
+  _recipient_email text,
+  _org_id uuid,
+  _type text,
+  _recipient_id uuid default null,
+  _payload jsonb default '{}'
+)
+returns public.notifications
+language plpgsql security definer set search_path = public as $$
+declare
+  notification_row public.notifications;
+begin
+  if _recipient_email is null or btrim(_recipient_email) = '' then
+    raise exception 'Recipient email is required for notification.';
+  end if;
+
+  if _org_id is null then
+    raise exception 'Organization ID is required for notification.';
+  end if;
+
+  if _type is null or btrim(_type) = '' then
+    raise exception 'Notification type is required.';
+  end if;
+
+  insert into public.notifications (recipient_id, recipient_email, org_id, type, payload)
+  values (_recipient_id, lower(trim(_recipient_email)), _org_id, _type, coalesce(_payload, '{}'::jsonb))
+  returning * into notification_row;
+
+  return notification_row;
+end;
+$$;
+alter function public.create_notification(text, uuid, text, uuid, jsonb) set row_security = off;
+
 create table if not exists public.dashboards (
   id uuid primary key default gen_random_uuid(),
   org_id uuid not null references public.orgs(id) on delete cascade,
@@ -164,9 +236,9 @@ drop policy if exists "invitations_select" on public.invitations;
 create policy "invitations_select" on public.invitations
   for select to authenticated
   using (
-    invited_by = auth.uid()
-    or public.is_org_member(org_id, auth.uid())
-    or lower(email) = lower((select email from public.profiles where id = auth.uid()))
+    public.has_org_role(org_id, auth.uid(), array['owner','admin']::public.app_role[])
+    or lower(email) = lower(auth.jwt() ->> 'email')
+    or invited_by = auth.uid()
   );
 
 drop policy if exists "invitations_insert" on public.invitations;
@@ -181,42 +253,40 @@ drop policy if exists "invitations_update" on public.invitations;
 create policy "invitations_update" on public.invitations
   for update to authenticated
   using (
-    invited_by = auth.uid()
-    or public.has_org_role(org_id, auth.uid(), array['owner','admin']::public.app_role[])
+    public.has_org_role(org_id, auth.uid(), array['owner','admin']::public.app_role[])
+    or lower(email) = lower(auth.jwt() ->> 'email')
   )
   with check (
-    invited_by = auth.uid()
-    or public.has_org_role(org_id, auth.uid(), array['owner','admin']::public.app_role[])
+    (status != 'accepted')
+    or lower(email) = lower(auth.jwt() ->> 'email')
   );
 
 drop policy if exists "invitations_delete" on public.invitations;
 create policy "invitations_delete" on public.invitations
   for delete to authenticated
   using (
-    invited_by = auth.uid()
-    or public.has_org_role(org_id, auth.uid(), array['owner','admin']::public.app_role[])
+    public.has_org_role(org_id, auth.uid(), array['owner','admin']::public.app_role[])
+    or invited_by = auth.uid()
   );
 
-create or replace function public.accept_invitation(_token text)
+create or replace function public.accept_invitation(p_token text)
 returns table(org_id uuid, user_id uuid, role public.app_role)
 language plpgsql security definer set search_path = public as $$
 declare
   invite record;
   accepted_role public.app_role := 'member';
 begin
-  -- Validate input
-  if _token is null or _token = '' then
+  if p_token is null or btrim(p_token) = '' then
     raise exception 'Invitation token is required';
   end if;
 
-  -- Fetch the invitation
   select * into invite
-  from public.invitations
-  where token = _token
+  from public.invitations i
+  where i.token = p_token
   limit 1;
 
   if invite.id is null then
-    raise exception 'Invitation not found or already accepted.';
+    raise exception 'Invitation not found.';
   end if;
 
   if invite.status <> 'pending' then
@@ -227,18 +297,14 @@ begin
     raise exception 'Authentication required to accept invitation.';
   end if;
 
-  if not exists (
-    select 1 from auth.users
-    where id = auth.uid() and lower(email) = lower(invite.email)
-  ) then
-    raise exception 'Please sign in with % to accept this invitation.', invite.email;
+  if lower(invite.email) <> lower(auth.jwt() ->> 'email') then
+    raise exception 'Please sign in with the invited email to accept this invitation.';
   end if;
 
   if invite.role = 'admin' then
     accepted_role := 'admin';
   end if;
 
-  -- Add user to org_members with appropriate role
   insert into public.org_members (org_id, user_id, role)
   values (invite.org_id, auth.uid(), accepted_role)
   on conflict (org_id, user_id) do update
@@ -248,23 +314,22 @@ begin
       else org_members.role
     end;
 
-  -- Assign dashboards if specified
   if array_length(invite.dashboard_ids, 1) is not null and array_length(invite.dashboard_ids, 1) > 0 then
     insert into public.dashboard_permissions (dashboard_id, user_id, org_id)
     select d.id, auth.uid(), invite.org_id
     from public.dashboards d
-    where d.id = any(invite.dashboard_ids) and d.org_id = invite.org_id
+    where d.id = any(invite.dashboard_ids)
+      and d.org_id = invite.org_id
     on conflict (dashboard_id, user_id) do nothing;
   end if;
 
-  -- Mark invitation as accepted
-  update public.invitations
-  set status = 'accepted', accepted_at = now()
+  delete from public.invitations
   where id = invite.id;
 
   return query select invite.org_id, auth.uid(), accepted_role;
 end;
 $$;
+alter function public.accept_invitation(text) set row_security = off;
 
 create or replace function public.create_invitation(
   _email text,
@@ -279,8 +344,11 @@ declare
   invite_row public.invitations;
   invite_exists boolean;
 begin
-  -- Validate inputs
-  if _email is null or _email = '' then
+  if auth.uid() is null then
+    raise exception 'Authentication required to create invitation.';
+  end if;
+
+  if _email is null or btrim(_email) = '' then
     raise exception 'Email is required';
   end if;
   if _org_id is null then
@@ -289,25 +357,53 @@ begin
   if _invited_by is null then
     raise exception 'Invited by user ID is required';
   end if;
+  if lower(_invited_by::text) <> lower(auth.uid()::text) then
+    raise exception 'Invited by must be the logged in user.';
+  end if;
 
-  -- Check for duplicate pending invitation
+  select exists(
+    select 1 from public.org_members
+    where org_id = _org_id
+      and user_id = auth.uid()
+      and role = any(array['owner','admin']::public.app_role[])
+  ) into invite_exists;
+
+  if not invite_exists then
+    raise exception 'Only workspace owners and admins can invite new members.';
+  end if;
+
   select exists(
     select 1 from public.invitations
-    where org_id = _org_id and lower(email) = lower(_email) and status = 'pending'
+    where org_id = _org_id and lower(email) = lower(trim(_email)) and status = 'pending'
   ) into invite_exists;
 
   if invite_exists then
     raise exception 'An invitation is already pending for %', _email;
   end if;
 
-  -- Insert the invitation
   insert into public.invitations (email, org_id, role, invited_by, dashboard_ids, status)
   values (lower(trim(_email)), _org_id, _role, _invited_by, coalesce(_dashboard_ids, '{}'), 'pending')
   returning * into invite_row;
 
+  raise notice 'create_invitation: org=% inviter=% email=% pending=%', _org_id, _invited_by, lower(trim(_email)), invite_exists;
+
+  perform public.create_notification(
+    lower(trim(_email)),
+    _org_id,
+    'workspace_invite',
+    (select id from auth.users u where lower(u.email) = lower(trim(_email)) limit 1),
+    jsonb_build_object(
+      'invite_id', invite_row.id,
+      'token', invite_row.token,
+      'role', invite_row.role,
+      'invited_by', invite_row.invited_by
+    )
+  );
+
   return invite_row;
 end;
 $$;
+alter function public.create_invitation(text, uuid, text, uuid, uuid[]) set row_security = off;
 
 drop policy if exists "dashboards_select" on public.dashboards;
 create policy "dashboards_select" on public.dashboards

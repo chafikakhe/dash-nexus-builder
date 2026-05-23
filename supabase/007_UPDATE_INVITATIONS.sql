@@ -1,7 +1,6 @@
 -- ============================================================
--- DashForge — Invite Members system
--- Add invitations table, RLS policies, and acceptance helper.
--- Run this file in Supabase SQL editor to update the database.
+-- 007_UPDATE_INVITATIONS.sql
+-- Migration: Update invitation table, RLS policies, and helper functions
 -- ============================================================
 
 create table if not exists public.invitations (
@@ -10,6 +9,7 @@ create table if not exists public.invitations (
   org_id uuid not null references public.orgs(id) on delete cascade,
   role text not null check (role in ('member','admin')),
   invited_by uuid not null references auth.users(id) on delete cascade,
+  dashboard_ids uuid[] not null default '{}',
   status text not null default 'pending' check (status in ('pending','accepted')),
   token text unique not null default gen_random_uuid(),
   created_at timestamptz not null default now(),
@@ -103,7 +103,9 @@ begin
 
   select exists(
     select 1 from public.invitations
-    where org_id = _org_id and lower(email) = lower(trim(_email)) and status = 'pending'
+    where org_id = _org_id
+      and lower(email) = lower(trim(_email))
+      and status = 'pending'
   ) into invite_exists;
 
   if invite_exists then
@@ -117,6 +119,7 @@ begin
   return invite_row;
 end;
 $$;
+alter function public.create_invitation(text, uuid, text, uuid, uuid[]) set row_security = off;
 
 drop function if exists public.accept_invitation(text);
 create or replace function public.accept_invitation(p_token text)

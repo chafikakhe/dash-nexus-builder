@@ -1,76 +1,60 @@
 -- ============================================================
--- DashForge — Invite Members system
--- Add invitations table, RLS policies, and acceptance helper.
--- Run this file in Supabase SQL editor to update the database.
+-- 006_FIX_INVITATIONS_RLS.sql
+-- Migration: Fix invitation RLS policies and create_invitation/accept_invitation helpers
 -- ============================================================
 
-create table if not exists public.invitations (
-  id uuid primary key default gen_random_uuid(),
-  email text not null,
-  org_id uuid not null references public.orgs(id) on delete cascade,
-  role text not null check (role in ('member','admin')),
-  invited_by uuid not null references auth.users(id) on delete cascade,
-  status text not null default 'pending' check (status in ('pending','accepted')),
-  token text unique not null default gen_random_uuid(),
-  created_at timestamptz not null default now(),
-  accepted_at timestamptz
-);
-alter table public.invitations enable row level security;
-
--- ------------------------------------------------------------
--- Permissions for invitations table
--- ------------------------------------------------------------
-
-drop policy if exists "invitations_select" on public.invitations;
-create policy "invitations_select" on public.invitations
-  for select to authenticated
-  using (
-    invited_by = auth.uid()
-    or public.is_org_member(org_id, auth.uid())
+-- Invitation select policy: allow org admins, invited user by email, or inviter
+DROP POLICY IF EXISTS "invitations_select" ON public.invitations;
+CREATE POLICY "invitations_select" ON public.invitations
+  FOR SELECT TO authenticated
+  USING (
+    public.has_org_role(org_id, auth.uid(), array['owner','admin']::public.app_role[])
+    OR lower(email) = lower(auth.jwt() ->> 'email')
+    OR invited_by = auth.uid()
   );
 
-drop policy if exists "invitations_insert" on public.invitations;
-create policy "invitations_insert" on public.invitations
-  for insert to authenticated
-  with check (
+-- Invitation insert policy: only org owners/admins can create invitations
+DROP POLICY IF EXISTS "invitations_insert" ON public.invitations;
+CREATE POLICY "invitations_insert" ON public.invitations
+  FOR INSERT TO authenticated
+  WITH CHECK (
     invited_by = auth.uid()
-    and public.has_org_role(org_id, auth.uid(), array['owner','admin']::public.app_role[])
+    AND public.has_org_role(org_id, auth.uid(), array['owner','admin']::public.app_role[])
   );
 
-drop policy if exists "invitations_update" on public.invitations;
-create policy "invitations_update" on public.invitations
-  for update to authenticated
-  using (
-    invited_by = auth.uid()
-    or public.has_org_role(org_id, auth.uid(), array['owner','admin']::public.app_role[])
+-- Invitation update policy: allow invited user or org admin
+DROP POLICY IF EXISTS "invitations_update" ON public.invitations;
+CREATE POLICY "invitations_update" ON public.invitations
+  FOR UPDATE TO authenticated
+  USING (
+    public.has_org_role(org_id, auth.uid(), array['owner','admin']::public.app_role[])
+    OR lower(email) = lower(auth.jwt() ->> 'email')
   )
-  with check (
-    invited_by = auth.uid()
-    or public.has_org_role(org_id, auth.uid(), array['owner','admin']::public.app_role[])
+  WITH CHECK (
+    (status != 'accepted')
+    OR lower(email) = lower(auth.jwt() ->> 'email')
   );
 
-drop policy if exists "invitations_delete" on public.invitations;
-create policy "invitations_delete" on public.invitations
-  for delete to authenticated
-  using (
-    invited_by = auth.uid()
-    or public.has_org_role(org_id, auth.uid(), array['owner','admin']::public.app_role[])
+-- Invitation delete policy: allow org admins or inviter
+DROP POLICY IF EXISTS "invitations_delete" ON public.invitations;
+CREATE POLICY "invitations_delete" ON public.invitations
+  FOR DELETE TO authenticated
+  USING (
+    public.has_org_role(org_id, auth.uid(), array['owner','admin']::public.app_role[])
+    OR invited_by = auth.uid()
   );
 
--- ------------------------------------------------------------
--- Invitation helper functions
--- ------------------------------------------------------------
-
-drop function if exists public.create_invitation(text, uuid, text, uuid, uuid[]);
-create or replace function public.create_invitation(
+-- Create or replace invitation helper functions
+DROP FUNCTION IF EXISTS public.create_invitation(text, uuid, text, uuid, uuid[]);
+CREATE OR REPLACE FUNCTION public.create_invitation(
   _email text,
   _org_id uuid,
   _role text,
   _invited_by uuid,
-  _dashboard_ids uuid[] default '{}'
+  _dashboard_ids uuid[] DEFAULT '{}'
 )
-returns public.invitations
-language plpgsql security definer set search_path = public as $$
+RETURNS public.invitations
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 declare
   invite_row public.invitations;
   invite_exists boolean;
@@ -98,12 +82,14 @@ begin
       and user_id = auth.uid()
       and role = any(array['owner','admin']::public.app_role[])
   ) then
-    raise exception 'Only workspace owners or admins can create invitations.';
+    raise exception 'Only workspace owners or admins can invite users.';
   end if;
 
   select exists(
     select 1 from public.invitations
-    where org_id = _org_id and lower(email) = lower(trim(_email)) and status = 'pending'
+    where org_id = _org_id
+      and lower(email) = lower(trim(_email))
+      and status = 'pending'
   ) into invite_exists;
 
   if invite_exists then
@@ -117,22 +103,23 @@ begin
   return invite_row;
 end;
 $$;
+alter function public.create_invitation(text, uuid, text, uuid, uuid[]) set row_security = off;
 
-drop function if exists public.accept_invitation(text);
-create or replace function public.accept_invitation(p_token text)
-returns table(org_id uuid, user_id uuid, role public.app_role)
-language plpgsql security definer set search_path = public as $$
+DROP FUNCTION IF EXISTS public.accept_invitation(text);
+CREATE OR REPLACE FUNCTION public.accept_invitation(token text)
+RETURNS TABLE(org_id uuid, user_id uuid, role public.app_role)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 declare
   invite record;
   accepted_role public.app_role := 'member';
 begin
-  if p_token is null or btrim(p_token) = '' then
+  if token is null or btrim(token) = '' then
     raise exception 'Invitation token is required';
   end if;
 
   select * into invite
   from public.invitations i
-  where i.token = p_token
+  where i.token = token
   limit 1;
 
   if invite.id is null then
@@ -181,4 +168,5 @@ end;
 $$;
 alter function public.accept_invitation(text) set row_security = off;
 
-notify pgrst, 'reload schema';
+-- Refresh PostgREST cache if needed
+NOTIFY pgrst, 'reload schema';
