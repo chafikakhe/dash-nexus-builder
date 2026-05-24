@@ -3,7 +3,7 @@ import { Topbar } from "@/components/layout/Topbar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
-  Plus, Search, Database, Filter, Download, Sparkles,
+  Plus, Search, Database, Filter, Download, Sparkles, Upload,
   Type, Hash, ToggleLeft, ListChecks, Calendar, Image as Img,
   Trash2, Loader2,
 } from "lucide-react";
@@ -24,6 +24,7 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
+import { ImportModal } from "@/components/import/ImportModal";
 
 const fieldIcons: Record<FieldType, React.ComponentType<{ className?: string }>> = {
   text: Type, number: Hash, boolean: ToggleLeft, select: ListChecks, date: Calendar, image: Img,
@@ -39,9 +40,10 @@ function csvEscape(v: any): string {
 }
 
 export default function Collections() {
-  const { currentOrgId } = useAuth();
+  const { currentOrgId, user } = useAuth();
   const {
     collections, loading: loadingCols,
+    refetch: refetchCollections,
     createCollection, updateSchema, removeCollection,
   } = useCollections();
 
@@ -51,6 +53,7 @@ export default function Collections() {
 
   const {
     records, loading: loadingRecs, addRecord, updateRecord, removeRecord,
+    refetch: refetchRecords,
   } = useCollectionRecords(activeCollectionId, currentOrgId);
 
   const [query, setQuery] = useState("");
@@ -63,6 +66,7 @@ export default function Collections() {
   const [openNewField, setOpenNewField] = useState(false);
   const [newFieldName, setNewFieldName] = useState("");
   const [newFieldType, setNewFieldType] = useState<FieldType>("text");
+  const [openImport, setOpenImport] = useState(false);
 
   const filtered = useMemo(() => {
     if (!query) return records;
@@ -217,6 +221,17 @@ export default function Collections() {
                     <Download className="h-3.5 w-3.5" />Export
                   </Button>
                   <Button variant="outline" size="sm" className="gap-1.5"><Sparkles className="h-3.5 w-3.5 text-primary" />AI</Button>
+                  {currentOrgId && user && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="gap-1.5"
+                      onClick={() => setOpenImport(true)}
+                    >
+                      <Upload className="h-3.5 w-3.5" />
+                      Import Data
+                    </Button>
+                  )}
                 </div>
               </div>
 
@@ -369,6 +384,24 @@ export default function Collections() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {currentOrgId && user && (
+        <ImportModal
+          open={openImport}
+          onOpenChange={setOpenImport}
+          orgId={currentOrgId}
+          userId={user.id}
+          collections={collections}
+          onImportSuccess={async (collectionId) => {
+            toast.success("Data imported successfully!");
+            setActiveId(collectionId);
+            await refetchCollections();
+            if (collectionId === activeCollectionId) {
+              await refetchRecords();
+            }
+          }}
+        />
+      )}
     </>
   );
 }
