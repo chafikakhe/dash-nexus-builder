@@ -41,6 +41,8 @@ const App = () => (
           <Routes>
             <Route path="/" element={<Landing />} />
             <Route path="/login" element={<Login />} />
+            <Route path="/auth" element={<Login />} />
+            <Route path="/signup" element={<Login />} />
             <Route path="/invite/:token" element={<Invite />} />
             <Route
               path="/app"
@@ -56,6 +58,7 @@ const App = () => (
               <Route path="dashboards/:id" element={<Builder />} />
               <Route path="collections" element={<Collections />} />
               <Route path="ai" element={<AIStudio />} />
+              <Route path="ai-studio" element={<AIStudio />} />
               <Route path="notifications" element={<Notifications />} />
               <Route path="members" element={<Members />} />
               <Route path="activity" element={<Activity />} />

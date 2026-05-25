@@ -181,9 +181,18 @@ export default function Login() {
       </div>
 
       <div className="hidden lg:flex relative items-center justify-center bg-card border-l border-border overflow-hidden">
-        <div className="absolute inset-0 bg-gradient-aurora" />
-        <div className="absolute inset-0 grid-bg opacity-20 [mask-image:radial-gradient(ellipse_at_center,black,transparent_70%)]" />
-        <div className="relative max-w-md p-10">
+        <video
+          autoPlay
+          muted
+          loop
+          playsInline
+          className="absolute inset-0 h-full w-full object-cover"
+        >
+          <source src="/videos/6930972-uhd_2160_3840_25fps.mp4" type="video/mp4" />
+        </video>
+        <div className="absolute inset-0 z-10 bg-black/60" />
+        <div className="absolute inset-0 z-10 bg-gradient-to-b from-black/25 via-purple-950/20 to-black/70" />
+        <div className="relative z-20 max-w-md p-10">
           <blockquote className="text-2xl font-semibold tracking-tight leading-snug">
             "DashForge replaced three internal tools and a $12k/mo BI vendor in a single weekend."
           </blockquote>
