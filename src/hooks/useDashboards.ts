@@ -1,4 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
+import {
+  FunctionsFetchError,
+  FunctionsHttpError,
+  FunctionsRelayError,
+} from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
@@ -14,6 +19,48 @@ export type Dashboard = {
   updated_at: string;
   permission?: "view" | "edit";
 };
+
+type FunctionErrorBody = {
+  error?: {
+    message?: string;
+  };
+};
+
+async function readFunctionErrorBody(context: unknown): Promise<FunctionErrorBody | null> {
+  if (!(context instanceof Response)) return null;
+
+  try {
+    return await context.clone().json();
+  } catch (_jsonError) {
+    try {
+      const text = await context.clone().text();
+      return text ? { error: { message: text } } : null;
+    } catch (_textError) {
+      return null;
+    }
+  }
+}
+
+async function toFunctionErrorMessage(error: unknown): Promise<string> {
+  if (error instanceof FunctionsHttpError) {
+    const body = await readFunctionErrorBody(error.context);
+    return body?.error?.message || `Edge Function returned HTTP ${error.context.status}.`;
+  }
+
+  if (error instanceof FunctionsRelayError) {
+    return `Supabase Functions relay error: ${error.message}`;
+  }
+
+  if (error instanceof FunctionsFetchError) {
+    return `Could not reach Supabase Edge Function: ${error.message}`;
+  }
+
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return "Failed to create dashboard.";
+}
 
 /**
  * Hook for managing dashboards.
@@ -114,28 +161,29 @@ export function useDashboards() {
         console.error("[dashboards] membership check unexpected error", e);
       }
       try {
-        const { data, error } = await supabase
-          .from("dashboards")
-          .insert({
-            org_id: currentOrgId,
+        const { data, error } = await supabase.functions.invoke("create-dashboard", {
+          body: {
+            orgId: currentOrgId,
             name: input.name,
             description: input.description ?? null,
             layout: input.layout ?? [],
-            created_by: user.id,
-          })
-          .select("*")
-          .single();
+          },
+        });
         if (error) {
-          console.error("[dashboards] Insert error:", error.code, error.message, error);
-          if (error.code === "PGRST301" || error.message.includes("row level security")) {
-            toast.error("Permission denied. Only workspace owners can create dashboards.");
-          } else {
-            toast.error(`Failed to create dashboard: ${error.message}`);
-          }
+          const message = await toFunctionErrorMessage(error);
+          console.error("[dashboards] create-dashboard function error:", message, error);
+          toast.error(`Failed to create dashboard: ${message}`);
           return null;
         }
-        console.debug("[dashboards] Dashboard created successfully:", data.id);
-        const created = { ...(data as Dashboard), permission: "edit" as const };
+
+        const createdRow = data?.dashboard;
+        if (!createdRow?.id) {
+          toast.error("Failed to create dashboard: missing dashboard payload.");
+          return null;
+        }
+
+        console.debug("[dashboards] Dashboard created successfully:", createdRow.id);
+        const created = { ...(createdRow as Dashboard), permission: "edit" as const };
         setDashboards((prev) => [created, ...prev]);
         return created;
       } catch (e: any) {

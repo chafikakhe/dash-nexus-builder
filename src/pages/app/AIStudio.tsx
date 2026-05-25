@@ -1,114 +1,237 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { ArrowUp, BarChart3, Bot, Database, Loader2, Sparkles, Wand2 } from "lucide-react";
 import { Topbar } from "@/components/layout/Topbar";
 import { Button } from "@/components/ui/button";
-import { Sparkles, Send, ArrowUp, Wand2, Database, BarChart3 } from "lucide-react";
 import { cn } from "@/lib/utils";
-
-type Msg = { role: "user" | "assistant"; content: string };
+import { sendAIStudioMessage, type AIStudioMessage } from "@/features/ai-studio/chat";
+import { generateDashboardWithAI } from "@/features/ai-dashboard/generateDashboard";
+import { useAuth } from "@/contexts/AuthContext";
+import { useDashboards } from "@/hooks/useDashboards";
+import { useCollections } from "@/hooks/useCollections";
 
 const suggestions = [
-  { icon: BarChart3, label: "Build me a revenue dashboard from Stripe data" },
-  { icon: Database, label: "Generate a customer schema with relations" },
-  { icon: Wand2, label: "Suggest 5 widgets for a SaaS support team" },
+  { icon: BarChart3, label: "Build me a revenue dashboard from Stripe-style subscription data" },
+  { icon: Database, label: "Create a dashboard to present my customer success collection" },
+  { icon: Wand2, label: "Generate an operations dashboard with open issues, SLA risk, and recent activity" },
 ];
 
-export default function AIStudio() {
-  const [messages, setMessages] = useState<Msg[]>([]);
-  const [input, setInput] = useState("");
+function shouldCreateDashboardFromPrompt(prompt: string) {
+  return /\b(build|create|generate)\b.*\b(dashboard|widgets?)\b|\bdashboard\b|\bwidgets?\b|\bchart\b/i.test(prompt);
+}
 
-  const send = (text: string) => {
-    if (!text.trim()) return;
-    setMessages((m) => [
-      ...m,
-      { role: "user", content: text },
-      {
-        role: "assistant",
-        content:
-          "I'd build a 4-widget dashboard:\n\n1. **MRR stat card** – sum(orders.mrr where active=true)\n2. **Revenue trend** – line chart, last 30 days\n3. **Top customers** – table sorted by MRR desc\n4. **Plan distribution** – pie chart by plan\n\nWant me to create it now?",
-      },
-    ]);
+function toTitleCase(value: string) {
+  return value
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function toDashboardName(prompt: string, collectionNames: string[]) {
+  const normalizedPrompt = prompt.toLowerCase();
+  const matchedCollection = [...collectionNames]
+    .sort((a, b) => b.length - a.length)
+    .find((name) => normalizedPrompt.includes(name.toLowerCase()));
+
+  if (matchedCollection) {
+    return `${toTitleCase(matchedCollection)} Overview`;
+  }
+
+  if (/\brevenue|sales|mrr|stripe\b/i.test(prompt)) return "Revenue Overview";
+  if (/\bcustomer success|support\b/i.test(prompt)) return "Customer Success Overview";
+  if (/\boperations|sla|issues?\b/i.test(prompt)) return "Operations Overview";
+  if (/\bemployee|hr|salary|payroll\b/i.test(prompt)) return "Workforce Overview";
+
+  const cleaned = prompt
+    .replace(/\s+/g, " ")
+    .replace(/^(build|create|generate)\s+(me\s+)?/i, "")
+    .replace(/\b(a|an|the)\b/gi, "")
+    .replace(/\bdashboard\b/gi, "")
+    .replace(/\bfor\b/gi, "")
+    .replace(/\bto\b/gi, "")
+    .trim();
+
+  if (!cleaned) return "AI Studio Dashboard";
+
+  const title = toTitleCase(cleaned);
+  return title.length > 60 ? `${title.slice(0, 57).trim()}...` : title;
+}
+
+export default function AIStudio() {
+  const navigate = useNavigate();
+  const { currentOrgId } = useAuth();
+  const { create } = useDashboards();
+  const { collections } = useCollections();
+
+  const [messages, setMessages] = useState<AIStudioMessage[]>([]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const send = async (text: string) => {
+    const cleaned = text.trim();
+    if (!cleaned || loading) return;
+
+    const nextHistory = [...messages, { role: "user" as const, content: cleaned }];
+    setMessages(nextHistory);
     setInput("");
+    setLoading(true);
+    setError(null);
+
+    try {
+      if (shouldCreateDashboardFromPrompt(cleaned)) {
+        if (!currentOrgId) {
+          throw new Error("Select a workspace before creating a dashboard.");
+        }
+
+        const created = await create({
+          name: toDashboardName(cleaned, collections.map((collection) => collection.name)),
+          description: "Created from AI Studio",
+          layout: [],
+        });
+
+        if (!created) {
+          throw new Error("Dashboard creation failed before widget generation started.");
+        }
+
+        const widgets = await generateDashboardWithAI({
+          orgId: currentOrgId,
+          dashboardId: created.id,
+          prompt: cleaned,
+        });
+
+        setMessages([
+          ...nextHistory,
+          {
+            role: "assistant",
+            content: `Created "${created.name}" with ${widgets.length} widget${widgets.length === 1 ? "" : "s"}. Opening it now...`,
+          },
+        ]);
+
+        navigate(`/app/dashboards/${created.id}`);
+        return;
+      }
+
+      const reply = await sendAIStudioMessage({
+        message: cleaned,
+        history: messages,
+      });
+
+      setMessages([...nextHistory, { role: "assistant", content: reply }]);
+    } catch (err) {
+      setMessages(messages);
+      setError(err instanceof Error ? err.message : "Failed to contact AI Studio.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
     <>
       <Topbar breadcrumb={[{ label: "Acme Inc." }, { label: "AI Studio" }]} />
-      <main className="flex-1 flex flex-col min-h-0">
+      <main className="flex min-h-0 flex-1 flex-col">
         <div className="flex-1 overflow-y-auto scrollbar-thin">
-          <div className="max-w-2xl mx-auto px-5 py-10">
+          <div className="mx-auto max-w-2xl px-5 py-10">
             {messages.length === 0 ? (
-              <div className="text-center animate-fade-in">
-                <div className="inline-flex h-12 w-12 rounded-xl bg-gradient-primary shadow-glow grid place-items-center mb-4">
+              <div className="animate-fade-in text-center">
+                <div className="mb-4 inline-flex h-12 w-12 place-items-center rounded-xl bg-gradient-primary shadow-glow">
                   <Sparkles className="h-5 w-5 text-primary-foreground" />
                 </div>
                 <h1 className="text-3xl font-bold tracking-tight">What should we build?</h1>
-                <p className="text-muted-foreground mt-2 text-sm">
-                  Describe a dashboard, schema, or query in plain English. DashForge AI will generate it for you.
+                <p className="mt-2 text-sm text-muted-foreground">
+                  Ask AI Studio for a dashboard and it will create it directly in your workspace instead of replying with a text-only mockup.
                 </p>
-                <div className="grid sm:grid-cols-3 gap-2 mt-8 text-left">
-                  {suggestions.map((s) => (
+                <div className="mt-8 grid gap-2 text-left sm:grid-cols-3">
+                  {suggestions.map((suggestion) => (
                     <button
-                      key={s.label}
-                      onClick={() => send(s.label)}
-                      className="rounded-lg border border-border bg-card p-3 text-xs text-muted-foreground hover:border-primary/40 hover:text-foreground transition-all text-left group"
+                      key={suggestion.label}
+                      type="button"
+                      onClick={() => void send(suggestion.label)}
+                      className="group rounded-lg border border-border bg-card p-3 text-left text-xs text-muted-foreground transition-all hover:border-primary/40 hover:text-foreground"
                     >
-                      <s.icon className="h-3.5 w-3.5 text-primary mb-2 group-hover:scale-110 transition-transform" />
-                      {s.label}
+                      <suggestion.icon className="mb-2 h-3.5 w-3.5 text-primary transition-transform group-hover:scale-110" />
+                      {suggestion.label}
                     </button>
                   ))}
                 </div>
               </div>
             ) : (
               <div className="space-y-6">
-                {messages.map((m, i) => (
-                  <div key={i} className={cn("flex gap-3", m.role === "user" && "justify-end")}>
-                    {m.role === "assistant" && (
-                      <div className="h-7 w-7 rounded-md bg-gradient-primary grid place-items-center shrink-0 shadow-glow">
-                        <Sparkles className="h-3.5 w-3.5 text-primary-foreground" />
+                {messages.map((message, index) => (
+                  <div key={`${message.role}-${index}`} className={cn("flex gap-3", message.role === "user" && "justify-end")}>
+                    {message.role === "assistant" && (
+                      <div className="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-gradient-primary shadow-glow">
+                        <Bot className="h-3.5 w-3.5 text-primary-foreground" />
                       </div>
                     )}
                     <div
                       className={cn(
-                        "rounded-xl px-4 py-2.5 text-sm whitespace-pre-wrap max-w-[80%]",
-                        m.role === "user"
+                        "max-w-[80%] whitespace-pre-wrap rounded-xl px-4 py-2.5 text-sm",
+                        message.role === "user"
                           ? "bg-gradient-primary text-primary-foreground shadow-glow"
-                          : "bg-card border border-border"
+                          : "border border-border bg-card"
                       )}
                     >
-                      {m.content}
+                      {message.content}
                     </div>
                   </div>
                 ))}
-                {messages[messages.length - 1]?.role === "assistant" && (
-                  <div className="flex gap-2 pl-10">
-                    <Button size="sm" className="bg-gradient-primary shadow-glow gap-1.5"><Wand2 className="h-3.5 w-3.5" />Create dashboard</Button>
-                    <Button size="sm" variant="outline">Refine</Button>
+
+                {loading ? (
+                  <div className="flex gap-3">
+                    <div className="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-gradient-primary shadow-glow">
+                      <Bot className="h-3.5 w-3.5 text-primary-foreground" />
+                    </div>
+                    <div className="flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-3 text-sm text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Creating dashboard...
+                    </div>
                   </div>
-                )}
+                ) : null}
               </div>
             )}
           </div>
         </div>
 
-        {/* Composer */}
-        <div className="border-t border-border bg-background/80 backdrop-blur-xl p-4">
-          <div className="max-w-2xl mx-auto">
+        <div className="border-t border-border bg-background/80 p-4 backdrop-blur-xl">
+          <div className="mx-auto max-w-2xl">
+            {error ? (
+              <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {error}
+              </div>
+            ) : null}
+
             <form
-              onSubmit={(e) => { e.preventDefault(); send(input); }}
-              className="relative rounded-xl border border-border bg-card focus-within:border-primary/60 focus-within:shadow-glow transition-all"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void send(input);
+              }}
+              className="relative rounded-xl border border-border bg-card transition-all focus-within:border-primary/60 focus-within:shadow-glow"
             >
               <textarea
                 value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(input); } }}
+                onChange={(event) => setInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    void send(input);
+                  }
+                }}
                 rows={2}
-                placeholder="Ask DashForge AI to build something…"
-                className="w-full bg-transparent resize-none px-4 py-3 text-sm placeholder:text-muted-foreground focus:outline-none scrollbar-thin"
+                placeholder="Ask AI Studio to create a dashboard directly in your workspace..."
+                className="w-full resize-none bg-transparent px-4 py-3 text-sm placeholder:text-muted-foreground focus:outline-none scrollbar-thin"
+                disabled={loading}
               />
               <div className="flex items-center justify-between px-3 pb-2">
-                <span className="text-[10px] text-muted-foreground">Claude · ⏎ to send</span>
-                <Button size="icon" type="submit" className="h-7 w-7 rounded-md bg-gradient-primary shadow-glow">
-                  <ArrowUp className="h-3.5 w-3.5" />
+                <span className="text-[10px] text-muted-foreground">Google AI Studio · Gemini · direct dashboard creation</span>
+                <Button
+                  size="icon"
+                  type="submit"
+                  disabled={loading || input.trim().length < 3}
+                  className="h-7 w-7 rounded-md bg-gradient-primary shadow-glow"
+                >
+                  {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowUp className="h-3.5 w-3.5" />}
                 </Button>
               </div>
             </form>

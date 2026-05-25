@@ -64,43 +64,44 @@ function getEnv() {
     supabaseUrl: Deno.env.get("SUPABASE_URL") ?? "",
     anonKey: Deno.env.get("SUPABASE_ANON_KEY") ?? "",
     serviceRoleKey: Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
-    openAiKey: Deno.env.get("OPENAI_API_KEY") ?? "",
+    googleAiKey: Deno.env.get("GOOGLE_AI_STUDIO_API_KEY") ?? "",
+    googleAiModel: Deno.env.get("GOOGLE_AI_MODEL") ?? "gemini-2.5-flash",
   };
 }
 
 function missingEnvError(env: ReturnType<typeof getEnv>) {
-  if (!env.openAiKey) return "Missing OPENAI_API_KEY";
+  if (!env.googleAiKey) return "Missing GOOGLE_AI_STUDIO_API_KEY";
   if (!env.supabaseUrl) return "Missing SUPABASE_URL";
   if (!env.serviceRoleKey) return "Missing SUPABASE_SERVICE_ROLE_KEY";
   if (!env.anonKey) return "Missing SUPABASE_ANON_KEY";
   return null;
 }
 
-function openAiErrorMessage(error: any, fallback: string) {
+function googleAiErrorMessage(error: any, fallback: string) {
   const code = error?.error?.code || error?.code;
   const type = error?.error?.type || error?.type;
   const message = error?.error?.message || error?.message || fallback;
-  const reason = code || type || "openai_error";
+  const reason = code || type || "google_ai_error";
   return `${reason}: ${message}`;
 }
 
-async function testOpenAI(openAiKey: string) {
-  if (!openAiKey) {
-    return fail(500, "OPENAI_API_KEY_MISSING", "Missing OPENAI_API_KEY");
+async function testGoogleAI(googleAiKey: string, googleAiModel: string) {
+  if (!googleAiKey) {
+    return fail(500, "GOOGLE_AI_STUDIO_API_KEY_MISSING", "Missing GOOGLE_AI_STUDIO_API_KEY");
   }
 
   try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(googleAiModel)}:generateContent?key=${encodeURIComponent(googleAiKey)}`, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${openAiKey}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: [{ role: "user", content: "Return ok." }],
-        max_tokens: 2,
-        temperature: 0,
+        contents: [{ role: "user", parts: [{ text: "Return ok." }] }],
+        generationConfig: {
+          temperature: 0,
+          maxOutputTokens: 8,
+        },
       }),
     });
 
@@ -109,21 +110,21 @@ async function testOpenAI(openAiKey: string) {
     if (!response.ok) {
       return fail(
         response.status,
-        "OPENAI_TEST_FAILED",
-        openAiErrorMessage(body, `OpenAI request failed with HTTP ${response.status}`)
+        "GOOGLE_AI_TEST_FAILED",
+        googleAiErrorMessage(body, `Google AI request failed with HTTP ${response.status}`)
       );
     }
 
     return json(200, {
       ok: true,
-      message: "OpenAI API request succeeded",
-      model: body?.model ?? "gpt-4o-mini",
+      message: "Google AI request succeeded",
+      model: googleAiModel,
     });
   } catch (error) {
     return fail(
       502,
-      "OPENAI_NETWORK_ERROR",
-      error instanceof Error ? `network error: ${error.message}` : "network error: OpenAI request failed"
+      "GOOGLE_AI_NETWORK_ERROR",
+      error instanceof Error ? `network error: ${error.message}` : "network error: Google AI request failed"
     );
   }
 }
@@ -152,15 +153,136 @@ function clampInt(value: unknown, min: number, max: number, fallback: number) {
   return Math.max(min, Math.min(max, Math.round(number)));
 }
 
-function parseOpenAIText(data: any) {
-  if (typeof data?.output_text === "string") return data.output_text;
-  const text = data?.output?.flatMap((item: any) => item?.content ?? [])
-    ?.find((content: any) => content?.type === "output_text")?.text;
-  if (typeof text === "string") return text;
-  const message = data?.choices?.[0]?.message;
-  if (typeof message?.refusal === "string") throw new Error(message.refusal);
-  if (typeof message?.content === "string") return message.content;
-  throw new Error("AI response did not contain JSON text.");
+function parseGoogleAiText(data: any) {
+  const candidate = data?.candidates?.[0];
+  const parts = candidate?.content?.parts;
+  if (!Array.isArray(parts)) throw new Error("AI response did not contain JSON text.");
+
+  const text = parts
+    .map((part: any) => (typeof part?.text === "string" ? part.text : ""))
+    .join("")
+    .trim();
+
+  if (!text) throw new Error("AI response did not contain JSON text.");
+
+  if (text.startsWith("```")) {
+    return text
+      .replace(/^```(?:json)?\s*/i, "")
+      .replace(/\s*```$/, "")
+      .trim();
+  }
+
+  return text;
+}
+
+function extractJsonObject(text: string) {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start === -1 || end === -1 || end <= start) return text;
+  return text.slice(start, end + 1);
+}
+
+async function requestDashboardWidgetsFromGoogleAI(input: {
+  googleAiKey: string;
+  googleAiModel: string;
+  prompt: string;
+  schemaForAi: Array<{ id: string; name: string; fields?: Array<{ name: string; type: string }> }>;
+  outputSchema: Record<string, unknown>;
+  validationError?: string;
+}) {
+  let lastError = "AI returned invalid JSON.";
+  let lastInvalidText = "";
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const aiResponse = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(input.googleAiModel)}:generateContent?key=${encodeURIComponent(input.googleAiKey)}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          systemInstruction: {
+            parts: [
+              {
+                text: [
+                  "You generate dashboard widget JSON only.",
+                  "Use only the supplied collection ids and field names.",
+                  "Do not generate SQL, React code, auth changes, RLS changes, workspace changes, markdown, or prose.",
+                  "Prefer 3 to 6 useful widgets. Use count aggregation when no numeric metric field is suitable.",
+                  "Return valid JSON matching the requested structure.",
+                  "For optional string fields, return an empty string instead of null.",
+                ].join(" "),
+              },
+            ],
+          },
+          contents: [
+            {
+              role: "user",
+              parts: [
+                {
+                  text: JSON.stringify({
+                    ...(attempt === 0
+                      ? {
+                          prompt: input.prompt,
+                          workspaceSchema: input.schemaForAi,
+                          instructions: [
+                            "Return the JSON object now.",
+                            "Every dataSourceId must match one of the provided collection ids exactly.",
+                            "Every xField, yField, metricField, and columns entry must match provided field names exactly.",
+                            "For bar_chart, line_chart, and pie_chart, choose both xField and yField from the same selected collection.",
+                            "Do not invent field names. Do not use labels, aliases, or derived names that are not in the schema.",
+                            input.validationError
+                              ? `Previous validation error to fix: ${input.validationError}`
+                              : "",
+                          ].filter(Boolean).join(" "),
+                        }
+                      : {
+                          instructions: [
+                            "Repair the invalid JSON below.",
+                            `JSON parse error: ${lastError}`,
+                            "Return corrected JSON only.",
+                            "Do not add markdown fences or explanations.",
+                            "Invalid JSON:",
+                            lastInvalidText,
+                          ].join("\n"),
+                        }),
+                  }),
+                },
+              ],
+            },
+          ],
+          generationConfig: {
+            temperature: 0,
+            topP: 0.9,
+            maxOutputTokens: 4096,
+            responseMimeType: "application/json",
+            responseJsonSchema: input.outputSchema,
+          },
+        }),
+      }
+    );
+
+    if (!aiResponse.ok) {
+      const details = await aiResponse.json().catch(async () => {
+        const text = await aiResponse.text().catch(() => "");
+        return { error: { message: text || `Google AI request failed with HTTP ${aiResponse.status}` } };
+      });
+      if (dev) console.error("[generate-dashboard] Google AI error", details);
+      throw new Error(googleAiErrorMessage(details, "AI generation failed. Please try again."));
+    }
+
+    try {
+      const aiData = await aiResponse.json();
+      lastInvalidText = extractJsonObject(parseGoogleAiText(aiData));
+      return JSON.parse(lastInvalidText) as { widgets?: unknown };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : "AI returned invalid JSON.";
+      if (dev) console.warn("[generate-dashboard] invalid AI JSON, retrying", { attempt: attempt + 1, lastError });
+    }
+  }
+
+  throw new Error(lastError);
 }
 
 function validateAiWidgets(widgets: unknown, collections: Collection[]): AiWidget[] {
@@ -297,14 +419,14 @@ Deno.serve(async (req) => {
     return json(200, {
       ok: true,
       message: "generate-dashboard function is reachable",
-      hasOpenAIKey: Boolean(env.openAiKey),
+      hasGoogleAiKey: Boolean(env.googleAiKey),
       hasSupabaseUrl: Boolean(env.supabaseUrl),
       hasServiceRole: Boolean(env.serviceRoleKey),
     });
   }
 
   if (payload.testOpenAI === true) {
-    return testOpenAI(env.openAiKey);
+    return testGoogleAI(env.googleAiKey, env.googleAiModel);
   }
 
   const envError = missingEnvError(env);
@@ -318,6 +440,7 @@ Deno.serve(async (req) => {
   const userClient = createClient(env.supabaseUrl, env.anonKey, {
     global: { headers: { Authorization: authHeader } },
   });
+  const adminClient = createClient(env.supabaseUrl, env.serviceRoleKey);
 
   const { data: userData, error: userError } = await userClient.auth.getUser();
   if (userError || !userData.user) return fail(401, "UNAUTHENTICATED", "Sign in before generating a dashboard.");
@@ -397,23 +520,25 @@ Deno.serve(async (req) => {
 
   const outputSchema = {
     type: "object",
-    additionalProperties: false,
     required: ["widgets"],
+    propertyOrdering: ["widgets"],
     properties: {
       widgets: {
         type: "array",
+        minItems: 1,
+        maxItems: 12,
         items: {
           type: "object",
-          additionalProperties: false,
           required: ["type", "title", "dataSourceId", "metricField", "aggregation", "xField", "yField", "columns", "width", "height", "x", "y"],
+          propertyOrdering: ["type", "title", "dataSourceId", "metricField", "aggregation", "xField", "yField", "columns", "width", "height", "x", "y"],
           properties: {
             type: { type: "string", enum: ["stat", "bar_chart", "line_chart", "pie_chart", "table"] },
             title: { type: "string" },
             dataSourceId: { type: "string" },
-            metricField: { type: ["string", "null"] },
-            aggregation: { type: ["string", "null"], enum: ["count", "sum", "avg", "min", "max", null] },
-            xField: { type: ["string", "null"] },
-            yField: { type: ["string", "null"] },
+            metricField: { type: "string", description: "Use an empty string when not applicable." },
+            aggregation: { type: "string", enum: ["", "count", "sum", "avg", "min", "max"] },
+            xField: { type: "string", description: "Use an empty string when not applicable." },
+            yField: { type: "string", description: "Use an empty string when not applicable." },
             columns: { type: "array", items: { type: "string" } },
             width: { type: "integer", minimum: 2, maximum: 12 },
             height: { type: "integer", minimum: 2, maximum: 8 },
@@ -425,74 +550,42 @@ Deno.serve(async (req) => {
     },
   };
 
-  const aiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${env.openAiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      temperature: 0.2,
-      messages: [
-        {
-          role: "system",
-          content: [
-            "You generate dashboard widget JSON only.",
-            "Use only the supplied collection ids and field names.",
-            "Do not generate SQL, React code, auth changes, RLS changes, workspace changes, markdown, or prose.",
-            "Prefer 3 to 6 useful widgets. Use count aggregation when no numeric metric field is suitable.",
-          ].join(" "),
-        },
-        {
-          role: "user",
-          content: JSON.stringify({ prompt, workspaceSchema: schemaForAi }),
-        },
-      ],
-      response_format: {
-        type: "json_schema",
-        json_schema: {
-          name: "dashboard_widgets",
-          strict: true,
-          schema: outputSchema,
-        },
-      },
-    }),
-  });
+  let aiWidgets: AiWidget[] | null = null;
+  let lastValidationError = "";
 
-  if (!aiResponse.ok) {
-    const details = await aiResponse.json().catch(async () => {
-      const text = await aiResponse.text().catch(() => "");
-      return { error: { message: text || `OpenAI request failed with HTTP ${aiResponse.status}` } };
-    });
-    if (dev) console.error("[generate-dashboard] OpenAI error", details);
-    return fail(
-      aiResponse.status,
-      "OPENAI_REQUEST_FAILED",
-      openAiErrorMessage(details, "AI generation failed. Please try again.")
-    );
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    let parsed: { widgets?: unknown };
+    try {
+      parsed = await requestDashboardWidgetsFromGoogleAI({
+        googleAiKey: env.googleAiKey,
+        googleAiModel: env.googleAiModel,
+        prompt,
+        schemaForAi,
+        outputSchema,
+        validationError: lastValidationError || undefined,
+      });
+    } catch (error) {
+      return fail(422, "AI_INVALID_JSON", error instanceof Error ? error.message : "AI returned invalid JSON.");
+    }
+
+    try {
+      aiWidgets = validateAiWidgets(parsed.widgets, collections);
+      break;
+    } catch (error) {
+      lastValidationError = error instanceof Error ? error.message : "AI output failed validation.";
+      if (dev) console.warn("[generate-dashboard] invalid AI widget selection, retrying", { attempt: attempt + 1, lastValidationError });
+    }
   }
 
-  let parsed: { widgets?: unknown };
-  try {
-    const aiData = await aiResponse.json();
-    parsed = JSON.parse(parseOpenAIText(aiData));
-  } catch (error) {
-    return fail(422, "AI_INVALID_JSON", error instanceof Error ? error.message : "AI returned invalid JSON.");
-  }
-
-  let aiWidgets: AiWidget[];
-  try {
-    aiWidgets = validateAiWidgets(parsed.widgets, collections);
-  } catch (error) {
-    return fail(422, "AI_VALIDATION_FAILED", error instanceof Error ? error.message : "AI output failed validation.");
+  if (!aiWidgets) {
+    return fail(422, "AI_VALIDATION_FAILED", lastValidationError || "AI output failed validation.");
   }
 
   const builderWidgets = await addSampleRows(userClient, toBuilderWidgets(aiWidgets, collections));
   const existingLayout = Array.isArray(dashboard.layout) ? dashboard.layout : [];
   const nextLayout = [...existingLayout, ...builderWidgets];
 
-  const { error: updateError } = await userClient
+  const { error: updateError } = await adminClient
     .from("dashboards")
     .update({ layout: nextLayout, updated_at: new Date().toISOString() })
     .eq("id", dashboardId)
@@ -522,7 +615,7 @@ Deno.serve(async (req) => {
     );
   }
 
-  const { error: insertError } = await userClient.from("dashboard_widgets").insert(widgetRows);
+  const { error: insertError } = await adminClient.from("dashboard_widgets").insert(widgetRows);
   if (insertError && insertError.code !== "42P01" && insertError.code !== "PGRST205") {
     return fail(500, "WIDGET_INSERT_FAILED", insertError.message);
   }
