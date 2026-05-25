@@ -1,7 +1,7 @@
-import { Search, Bell, Command as CmdIcon } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Search, Command as CmdIcon } from "lucide-react";
 import { useAppStore } from "@/store/app";
 import { useAuth } from "@/contexts/AuthContext";
+import { InvitationNotificationBadge } from "@/components/invitations/InvitationNotificationBadge";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -55,10 +55,7 @@ export function Topbar({ title, breadcrumb, actions }: TopbarProps) {
 
       {actions}
 
-      <Button variant="ghost" size="icon" className="h-8 w-8 relative">
-        <Bell className="h-4 w-4" />
-        <span className="absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-primary animate-pulse-glow" />
-      </Button>
+      <InvitationNotificationBadge />
 
       <DropdownMenu>
         <DropdownMenuTrigger asChild>

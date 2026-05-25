@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Topbar } from "@/components/layout/Topbar";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -11,7 +11,10 @@ import { sendInviteEmail } from "@/lib/email";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
 import { useDashboards, type Dashboard } from "@/hooks/useDashboards";
+import { useCollections, type Collection } from "@/hooks/useCollections";
+import { useWorkspacePermissions } from "@/hooks/useWorkspacePermissions";
 import { fetchOrgMembers, fetchOrgInvitations, createInvitation } from "@/lib/workspace-queries";
+import { supabase } from "@/lib/supabase";
 
 type Member = {
   user_id: string;
@@ -35,13 +38,12 @@ type Invite = {
 const roleColor = (r: string) =>
   r === "owner" ? "bg-primary/15 text-primary border-primary/30" :
   r === "admin" ? "bg-success/15 text-success border-success/30" :
-  r === "editor" ? "bg-warning/15 text-warning border-warning/30" :
-  "bg-secondary text-muted-foreground border-border";
+  "bg-secondary text-foreground border-border";
 
 const roleLabel = (r: string) =>
   r === "owner" ? "Owner" :
   r === "admin" ? "Admin" :
-  r === "editor" ? "Editor" : "Viewer";
+  "Member";
 
 const inviteRoleLabel = (role: string) => (role === "admin" ? "Admin" : "Member");
 
@@ -54,12 +56,15 @@ export default function Members() {
   const [isInviteOpen, setIsInviteOpen] = useState(false);
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState<"member" | "admin">("member");
-  const [inviteDashboardIds, setInviteDashboardIds] = useState<string[]>([]);
+  const [dashboardGrants, setDashboardGrants] = useState<Record<string, "view" | "edit">>({});
+  const [collectionGrants, setCollectionGrants] = useState<Record<string, "view" | "edit">>({});
   const [inviteLoading, setInviteLoading] = useState(false);
 
   const { dashboards } = useDashboards();
+  const { collections } = useCollections();
+  const { canInvite, canViewMembers } = useWorkspacePermissions();
 
-  const canInvite = useMemo(() => currentOrg?.role === "owner" || currentOrg?.role === "admin", [currentOrg?.role]);
+  const selectedResourceCount = Object.keys(dashboardGrants).length + Object.keys(collectionGrants).length;
 
   const loadMembersAndInvites = async () => {
     if (!currentOrgId) {
@@ -71,13 +76,14 @@ export default function Members() {
 
     try {
       setLoading(true);
+      console.log("[members] activeOrgId", currentOrgId);
 
-      // Fetch members and invitations in parallel
       const [membersData, invitationsData] = await Promise.all([
         fetchOrgMembers(currentOrgId),
-        fetchOrgInvitations(currentOrgId),
+        canViewMembers ? fetchOrgInvitations(currentOrgId) : Promise.resolve([]),
       ]);
 
+      console.log("[members] fetched org_members count", membersData.length);
       setMembers(membersData);
       setPendingInvites(invitationsData);
     } catch (error) {
@@ -90,7 +96,7 @@ export default function Members() {
 
   useEffect(() => {
     void loadMembersAndInvites();
-  }, [currentOrgId]);
+  }, [currentOrgId, canViewMembers]);
 
   const handleInvite = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -104,15 +110,22 @@ export default function Members() {
       toast.error("Enter a valid email address.");
       return;
     }
+    if (selectedResourceCount === 0) {
+      toast.error("Select at least one dashboard or collection to share.");
+      return;
+    }
 
     setInviteLoading(true);
 
     try {
+      const dashboardPermissions = Object.entries(dashboardGrants).map(([dashboard_id, permission]) => ({ dashboard_id, permission }));
+      const collectionPermissions = Object.entries(collectionGrants).map(([collection_id, permission]) => ({ collection_id, permission }));
       const insertedInvite = await createInvitation(
         normalizedEmail,
         currentOrgId,
-        inviteRole as "owner" | "admin" | "member" | "editor" | "viewer",
-        inviteDashboardIds
+        inviteRole,
+        dashboardPermissions,
+        collectionPermissions
       );
 
       if (!insertedInvite) {
@@ -124,18 +137,20 @@ export default function Members() {
       console.log("[members] invite created", insertedInvite);
       const inviteLink = `${window.location.origin}/invite/${insertedInvite.token}`;
       const workspaceName = currentOrg?.name ?? "workspace";
+      toast.success("Invitation created. The user will see it inside their account when they log in with this email.");
 
       try {
         await sendInviteEmail(normalizedEmail, workspaceName, inviteLink);
-        toast.success("Invitation email sent.");
+        console.log("[members] invitation email sent");
       } catch (emailError) {
         console.error("[members] invite email error:", emailError);
-        toast.error("Invite saved, but sending email failed. Try again later.");
+        toast.error("Invitation created in app, but sending email failed.");
       }
 
       setInviteEmail("");
       setInviteRole("member");
-      setInviteDashboardIds([]);
+      setDashboardGrants({});
+      setCollectionGrants({});
       setIsInviteOpen(false);
       await loadMembersAndInvites();
     } catch (error) {
@@ -148,7 +163,6 @@ export default function Members() {
 
   const handleRevoke = async (inviteId: string) => {
     try {
-      const { supabase } = await import("@/lib/supabase");
       const { error } = await supabase.from("invitations").delete().eq("id", inviteId);
       if (error) {
         console.error("[members] revoke error:", error);
@@ -169,7 +183,7 @@ export default function Members() {
         breadcrumb={[{ label: currentOrg?.name ?? "Workspace" }, { label: "Members" }]}
         actions={
           <div className="flex items-center gap-2">
-            {!canInvite && <Badge className="bg-muted text-muted-foreground">Owner/Admin only</Badge>}
+            {!canInvite && <Badge className="bg-muted text-muted-foreground">Owner only</Badge>}
             <Dialog open={isInviteOpen} onOpenChange={setIsInviteOpen}>
               <DialogTrigger asChild>
                 <Button size="sm" className="bg-gradient-primary shadow-glow" disabled={!canInvite}>
@@ -195,7 +209,13 @@ export default function Members() {
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="invite-role">Role</Label>
-                    <Select value={inviteRole} onValueChange={(value) => setInviteRole(value as "member" | "admin") }>
+                    <Select
+                      value={inviteRole}
+                      onValueChange={(value) => {
+                        const nextRole = value as "member" | "admin";
+                        setInviteRole(nextRole);
+	                      }}
+                    >
                       <SelectTrigger id="invite-role">
                         <SelectValue placeholder="Choose a role" />
                       </SelectTrigger>
@@ -204,34 +224,24 @@ export default function Members() {
                         <SelectItem value="admin">Admin</SelectItem>
                       </SelectContent>
                     </Select>
-                    <p className="text-sm text-muted-foreground">Members can access the workspace. Admins can manage members.</p>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Assign dashboards</Label>
-                    {dashboards.length === 0 ? (
-                      <p className="text-sm text-muted-foreground">No dashboards available yet. Assign access once you have created one.</p>
-                    ) : (
-                      <div className="grid gap-2 max-h-48 overflow-y-auto rounded border border-border p-3">
-                        {dashboards.map((dashboard: Dashboard) => (
-                          <label key={dashboard.id} className="flex items-center gap-2 text-sm">
-                            <input
-                              type="checkbox"
-                              checked={inviteDashboardIds.includes(dashboard.id)}
-                              onChange={() => {
-                                setInviteDashboardIds((prev) =>
-                                  prev.includes(dashboard.id)
-                                    ? prev.filter((id) => id !== dashboard.id)
-                                    : [...prev, dashboard.id],
-                                );
-                              }}
-                              className="h-4 w-4 rounded border-border text-primary focus:ring-primary"
-                            />
-                            <span>{dashboard.name}</span>
-                          </label>
-                        ))}
-                      </div>
-                    )}
-                  </div>
+	                    <p className="text-sm text-muted-foreground">Admins and members only see selected resources.</p>
+	                  </div>
+	                  <div className="space-y-4">
+	                    <ResourceGrantPicker
+	                      title="Dashboards"
+	                      emptyText="No dashboards available yet."
+	                      items={dashboards.map((dashboard: Dashboard) => ({ id: dashboard.id, name: dashboard.name }))}
+	                      grants={dashboardGrants}
+	                      onChange={setDashboardGrants}
+	                    />
+	                    <ResourceGrantPicker
+	                      title="Collections"
+	                      emptyText="No collections available yet."
+	                      items={collections.map((collection: Collection) => ({ id: collection.id, name: collection.name }))}
+	                      grants={collectionGrants}
+	                      onChange={setCollectionGrants}
+	                    />
+	                  </div>
                   <DialogFooter>
                     <Button type="submit" className="bg-gradient-primary shadow-glow" disabled={inviteLoading}>
                       {inviteLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Send invitation"}
@@ -251,7 +261,7 @@ export default function Members() {
               <p className="text-sm text-muted-foreground mt-1">Manage who has access to this workspace.</p>
             </div>
             <div className="hidden sm:block text-sm text-muted-foreground">
-              {members.length} workspace member{members.length === 1 ? "" : "s"}
+              {canViewMembers ? `${members.length} workspace member${members.length === 1 ? "" : "s"}` : "Your membership"}
             </div>
           </div>
 
@@ -261,7 +271,7 @@ export default function Members() {
             </div>
           ) : members.length === 0 ? (
             <div className="mt-6 flex items-center justify-center py-12 text-muted-foreground">
-              No members yet. Invite someone to get started.
+              {canViewMembers ? "No members yet. Invite someone to get started." : "Your membership could not be loaded."}
             </div>
           ) : (
             <div className="mt-6 rounded-xl border border-border bg-background divide-y divide-border overflow-hidden">
@@ -275,9 +285,11 @@ export default function Members() {
                       <div className="text-xs text-muted-foreground">{member.email}</div>
                     </div>
                     <span className={`inline-flex rounded-full border px-2 py-1 text-[11px] font-semibold ${roleColor(member.role)}`}>{roleLabel(member.role)}</span>
-                    <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Member actions">
-                      <MoreHorizontal className="h-3.5 w-3.5" />
-                    </Button>
+                    {canViewMembers && (
+                      <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Member actions">
+                        <MoreHorizontal className="h-3.5 w-3.5" />
+                      </Button>
+                    )}
                   </div>
                 );
               })}
@@ -293,7 +305,7 @@ export default function Members() {
             </div>
           </div>
 
-          {loading ? null : pendingInvites.length === 0 ? (
+          {loading || !canViewMembers ? null : pendingInvites.length === 0 ? (
             <div className="mt-6 rounded-2xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
               No pending invitations. Use the invite button to add someone to this workspace.
             </div>
@@ -328,5 +340,64 @@ export default function Members() {
         </section>
       </main>
     </>
+  );
+}
+
+function ResourceGrantPicker({
+  title,
+  emptyText,
+  items,
+  grants,
+  onChange,
+}: {
+  title: string;
+  emptyText: string;
+  items: Array<{ id: string; name: string }>;
+  grants: Record<string, "view" | "edit">;
+  onChange: (next: Record<string, "view" | "edit">) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <Label>{title}</Label>
+      {items.length === 0 ? (
+        <p className="text-sm text-muted-foreground">{emptyText}</p>
+      ) : (
+        <div className="grid gap-2 max-h-48 overflow-y-auto rounded border border-border p-3">
+          {items.map((item) => {
+            const selected = grants[item.id];
+            return (
+              <div key={item.id} className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={Boolean(selected)}
+                  onChange={(event) => {
+                    const next = { ...grants };
+                    if (event.target.checked) next[item.id] = "view";
+                    else delete next[item.id];
+                    onChange(next);
+                  }}
+                  className="h-4 w-4 rounded border-border text-primary focus:ring-primary"
+                />
+                <span className="flex-1 truncate">{item.name}</span>
+                {selected && (
+                  <Select
+                    value={selected}
+                    onValueChange={(permission) => onChange({ ...grants, [item.id]: permission as "view" | "edit" })}
+                  >
+                    <SelectTrigger className="h-8 w-24">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="view">View</SelectItem>
+                      <SelectItem value="edit">Edit</SelectItem>
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }

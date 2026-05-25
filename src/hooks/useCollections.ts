@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
+import { useWorkspacePermissions } from "@/hooks/useWorkspacePermissions";
 
 export type FieldType = "text" | "number" | "boolean" | "select" | "date" | "image";
 export type Field = { name: string; type: FieldType };
@@ -12,6 +13,7 @@ export type Collection = {
   name: string;
   schema: Field[];
   created_at: string;
+  permission?: "view" | "edit";
 };
 
 export type CollectionRecord = {
@@ -25,6 +27,7 @@ export type CollectionRecord = {
 
 export function useCollections() {
   const { currentOrgId, user } = useAuth();
+  const { canCreateContent, isOwner } = useWorkspacePermissions();
   const [collections, setCollections] = useState<Collection[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -47,8 +50,24 @@ export function useCollections() {
         console.error("[collections] Fetch error:", error.message, error);
         toast.error(`Failed to load collections: ${error.message}`);
       } else {
-        console.debug("[collections] Fetched", data?.length ?? 0, "collections");
-        setCollections((data ?? []).map((c: any) => ({ ...c, schema: c.schema ?? [] })) as Collection[]);
+        const rows = ((data ?? []).map((c: any) => ({ ...c, schema: c.schema ?? [] })) as Collection[]);
+        if (isOwner) {
+          setCollections(rows.map((collection) => ({ ...collection, permission: "edit" })));
+        } else if (user && rows.length > 0) {
+          const { data: permissions, error: permissionError } = await supabase
+            .from("collection_permissions")
+            .select("collection_id, permission")
+            .eq("user_id", user.id)
+            .in("collection_id", rows.map((collection) => collection.id));
+          if (permissionError) console.error("[collections] Permission lookup error:", permissionError);
+          const permissionByCollection = new Map(
+            (permissions ?? []).map((permission) => [permission.collection_id, permission.permission as "view" | "edit"])
+          );
+          setCollections(rows.map((collection) => ({ ...collection, permission: permissionByCollection.get(collection.id) ?? "view" })));
+        } else {
+          setCollections(rows);
+        }
+        console.debug("[collections] Fetched", rows.length, "collections");
       }
     } catch (e: any) {
       console.error("[collections] Unexpected fetch error:", e);
@@ -56,7 +75,7 @@ export function useCollections() {
     } finally {
       setLoading(false);
     }
-  }, [currentOrgId]);
+  }, [currentOrgId, isOwner, user]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
@@ -90,8 +109,8 @@ export function useCollections() {
           toast.error("You don't have access to this workspace");
           return null;
         }
-        if (membership.role === "viewer") {
-          toast.error("You need editor permissions to create collections");
+        if (!canCreateContent || membership.role !== "owner") {
+          toast.error("Only workspace owners can create collections");
           return null;
         }
       } catch (e) {
@@ -116,7 +135,7 @@ export function useCollections() {
         }
 
         console.debug("[collections] Collection created successfully:", data);
-        const col = { ...(data as any), schema: (data as any).schema ?? [] } as Collection;
+        const col = { ...(data as any), schema: (data as any).schema ?? [], permission: "edit" as const } as Collection;
         setCollections((prev) => [...prev, col]);
         return col;
       } catch (e: any) {
@@ -125,7 +144,7 @@ export function useCollections() {
         return null;
       }
     },
-    [currentOrgId, user]
+    [canCreateContent, currentOrgId, user]
   );
 
   const updateSchema = useCallback(async (id: string, schema: Field[]) => {

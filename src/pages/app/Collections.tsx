@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Topbar } from "@/components/layout/Topbar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
 import { ImportModal } from "@/components/import/ImportModal";
+import { useWorkspacePermissions } from "@/hooks/useWorkspacePermissions";
 
 const fieldIcons: Record<FieldType, React.ComponentType<{ className?: string }>> = {
   text: Type, number: Hash, boolean: ToggleLeft, select: ListChecks, date: Calendar, image: Img,
@@ -41,6 +42,7 @@ function csvEscape(v: any): string {
 
 export default function Collections() {
   const { currentOrgId, user } = useAuth();
+  const { canCreateContent, canEditWorkspaceContent, isReadOnlyMember, isAdmin } = useWorkspacePermissions();
   const {
     collections, loading: loadingCols,
     refetch: refetchCollections,
@@ -67,6 +69,11 @@ export default function Collections() {
   const [newFieldName, setNewFieldName] = useState("");
   const [newFieldType, setNewFieldType] = useState<FieldType>("text");
   const [openImport, setOpenImport] = useState(false);
+  const canEditActiveCollection = canEditWorkspaceContent || (isAdmin && active?.permission === "edit");
+
+  useEffect(() => {
+    if (!canEditActiveCollection) setOpenNewField(false);
+  }, [canEditActiveCollection]);
 
   const filtered = useMemo(() => {
     if (!query) return records;
@@ -138,9 +145,13 @@ export default function Collections() {
       <Topbar
         breadcrumb={[{ label: "Workspace" }, { label: "Collections" }]}
         actions={
-          <Button size="sm" className="bg-gradient-primary shadow-glow" onClick={() => setOpenNewCol(true)}>
-            <Plus className="h-3.5 w-3.5 mr-1.5" />New collection
-          </Button>
+          canCreateContent ? (
+            <Button size="sm" className="bg-gradient-primary shadow-glow" onClick={() => setOpenNewCol(true)}>
+              <Plus className="h-3.5 w-3.5 mr-1.5" />New collection
+            </Button>
+          ) : (
+            <Badge variant="secondary">{isAdmin ? "Assigned access" : "Read-only mode"}</Badge>
+          )
         }
       />
       <div className="flex-1 flex min-h-0">
@@ -155,9 +166,13 @@ export default function Collections() {
             </div>
           )}
           {!loadingCols && collections.length === 0 && (
-            <div className="px-2.5 py-2 text-xs text-muted-foreground">No collections yet</div>
+            <div className="px-2.5 py-2 text-xs text-muted-foreground">
+              {isReadOnlyMember || isAdmin ? "No shared collections" : "No collections yet"}
+            </div>
           )}
-          {collections.map((c) => (
+          {collections.map((c) => {
+            const canEditCollection = canEditWorkspaceContent || (isAdmin && c.permission === "edit");
+            return (
             <div key={c.id} className="group flex items-center">
               <button
                 onClick={() => setActiveId(c.id)}
@@ -173,6 +188,7 @@ export default function Collections() {
                 </div>
                 <span className="flex-1 text-left truncate">{c.name}</span>
               </button>
+              {canEditCollection && (
               <button
                 className="opacity-0 group-hover:opacity-100 p-1 text-muted-foreground hover:text-destructive"
                 onClick={async () => {
@@ -185,8 +201,11 @@ export default function Collections() {
               >
                 <Trash2 className="h-3 w-3" />
               </button>
+              )}
             </div>
-          ))}
+            );
+          })}
+          {canCreateContent && (
           <Button
             variant="ghost" size="sm"
             className="w-full mt-2 justify-start text-muted-foreground hover:text-foreground"
@@ -194,13 +213,14 @@ export default function Collections() {
           >
             <Plus className="h-3.5 w-3.5 mr-2" />New collection
           </Button>
+          )}
         </aside>
 
         {/* Records */}
         <main className="flex-1 flex flex-col min-w-0">
           {!active ? (
             <div className="flex-1 grid place-items-center text-sm text-muted-foreground">
-              {loadingCols ? "Loading…" : "Create a collection to get started"}
+              {loadingCols ? "Loading…" : isReadOnlyMember || isAdmin ? "No shared collections" : "Create a collection to get started"}
             </div>
           ) : (
             <>
@@ -220,8 +240,8 @@ export default function Collections() {
                   <Button variant="outline" size="sm" className="gap-1.5" onClick={handleExportCSV}>
                     <Download className="h-3.5 w-3.5" />Export
                   </Button>
-                  <Button variant="outline" size="sm" className="gap-1.5"><Sparkles className="h-3.5 w-3.5 text-primary" />AI</Button>
-                  {currentOrgId && user && (
+                  {canEditActiveCollection && <Button variant="outline" size="sm" className="gap-1.5"><Sparkles className="h-3.5 w-3.5 text-primary" />AI</Button>}
+                  {canEditActiveCollection && currentOrgId && user && (
                     <Button
                       variant="outline"
                       size="sm"
@@ -251,6 +271,7 @@ export default function Collections() {
                               <div className="flex items-center gap-1.5">
                                 <Icon className="h-3 w-3" />
                                 <span>{f.name}</span>
+                                {canEditActiveCollection && (
                                 <button
                                   onClick={() => handleRemoveField(f.name)}
                                   className="opacity-0 group-hover:opacity-100 ml-auto text-muted-foreground hover:text-destructive"
@@ -258,11 +279,13 @@ export default function Collections() {
                                 >
                                   <Trash2 className="h-3 w-3" />
                                 </button>
+                                )}
                               </div>
                             </th>
                           );
                         })}
                         <th className="px-4 py-2.5 w-10">
+                          {canEditActiveCollection && (
                           <button
                             className="text-muted-foreground hover:text-foreground"
                             onClick={() => setOpenNewField(true)}
@@ -270,6 +293,7 @@ export default function Collections() {
                           >
                             <Plus className="h-3.5 w-3.5" />
                           </button>
+                          )}
                         </th>
                         <th className="px-4 py-2.5 w-10" />
                       </tr>
@@ -283,11 +307,13 @@ export default function Collections() {
                                 field={f}
                                 value={r.data?.[f.name]}
                                 onChange={(v) => handleCellChange(r.id, f.name, v)}
+                                readOnly={!canEditActiveCollection}
                               />
                             </td>
                           ))}
                           <td />
                           <td className="px-2 py-1 text-right">
+                            {canEditActiveCollection && (
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
                                 <button className="opacity-0 group-hover:opacity-100 p-1 text-muted-foreground hover:text-foreground">
@@ -306,9 +332,11 @@ export default function Collections() {
                                 </DropdownMenuItem>
                               </DropdownMenuContent>
                             </DropdownMenu>
+                            )}
                           </td>
                         </tr>
                       ))}
+                      {canEditActiveCollection && (
                       <tr>
                         <td colSpan={(active.schema?.length ?? 0) + 2} className="px-4 py-2">
                           <button
@@ -322,6 +350,7 @@ export default function Collections() {
                           </button>
                         </td>
                       </tr>
+                      )}
                     </tbody>
                   </table>
                 )}
@@ -407,11 +436,12 @@ export default function Collections() {
 }
 
 function CellEditor({
-  field, value, onChange,
+  field, value, onChange, readOnly = false,
 }: {
   field: Field;
   value: any;
   onChange: (v: any) => void;
+  readOnly?: boolean;
 }) {
   const [local, setLocal] = useState<any>(value ?? "");
 
@@ -426,6 +456,7 @@ function CellEditor({
         type="checkbox"
         checked={Boolean(value)}
         onChange={(e) => onChange(e.target.checked)}
+        disabled={readOnly}
         className="h-4 w-4 accent-primary"
       />
     );
@@ -436,6 +467,7 @@ function CellEditor({
         type="number"
         defaultValue={value ?? ""}
         onBlur={(e) => onChange(e.target.value === "" ? null : Number(e.target.value))}
+        readOnly={readOnly}
         className="w-full bg-transparent px-2 py-1 text-sm focus:bg-secondary/60 rounded outline-none focus:ring-1 focus:ring-primary tabular-nums"
       />
     );
@@ -446,6 +478,7 @@ function CellEditor({
         type="date"
         defaultValue={value ?? ""}
         onBlur={(e) => onChange(e.target.value || null)}
+        readOnly={readOnly}
         className="w-full bg-transparent px-2 py-1 text-sm focus:bg-secondary/60 rounded outline-none focus:ring-1 focus:ring-primary"
       />
     );
@@ -455,6 +488,7 @@ function CellEditor({
       type="text"
       defaultValue={value ?? ""}
       onBlur={(e) => onChange(e.target.value)}
+      readOnly={readOnly}
       className="w-full bg-transparent px-2 py-1 text-sm focus:bg-secondary/60 rounded outline-none focus:ring-1 focus:ring-primary"
     />
   );

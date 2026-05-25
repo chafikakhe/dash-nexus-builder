@@ -98,33 +98,53 @@ export async function switchToWorkspace(orgId: string): Promise<Workspace | null
 }
 
 /**
- * Fetch organization members with explicit aliases
+ * Fetch accepted organization members for an organization.
  */
 export async function fetchOrgMembers(orgId: string) {
   try {
-    const { data, error } = await supabase
+    console.log("[queries] fetchOrgMembers activeOrgId:", orgId);
+
+    const { data: memberRows, error: membersError } = await supabase
       .from("org_members")
-      .select(
-        `
-        user_id,
-        role,
-        profiles:profiles(email, display_name)
-      `
-      )
+      .select("user_id, role")
       .eq("org_id", orgId)
       .order("role", { ascending: false });
 
-    if (error) {
-      console.error("[queries] Error fetching members:", error);
+    if (membersError) {
+      console.error("[queries] members query error:", membersError);
       return [];
     }
 
+    const members = (memberRows ?? []) as Array<{ user_id: string; role: string }>;
+    console.log("[queries] fetched org_members count:", members.length);
+
+    const userIds = members.map((member) => member.user_id).filter(Boolean);
+    const profilesById = new Map<string, { email?: string | null; display_name?: string | null }>();
+
+    if (userIds.length > 0) {
+      const { data: profiles, error: profilesError } = await supabase
+        .from("profiles")
+        .select("id, email, display_name")
+        .in("id", userIds);
+
+      if (profilesError) {
+        console.error("[queries] Error fetching member profiles:", profilesError);
+      } else {
+        for (const profile of profiles ?? []) {
+          profilesById.set(profile.id, profile);
+        }
+      }
+    }
+
     return (
-      (data as any[])?.map((m) => ({
-        user_id: m.user_id,
-        role: m.role,
-        email: m.profiles?.email ?? "—",
-        display_name: m.profiles?.display_name ?? m.profiles?.email?.split("@")[0] ?? "User",
+      members.map((member) => ({
+        user_id: member.user_id,
+        role: member.role,
+        email: profilesById.get(member.user_id)?.email ?? "—",
+        display_name:
+          profilesById.get(member.user_id)?.display_name ??
+          profilesById.get(member.user_id)?.email?.split("@")[0] ??
+          "User",
       })) || []
     );
   } catch (error) {
@@ -172,15 +192,17 @@ export async function fetchOrgInvitations(orgId: string) {
 export async function createInvitation(
   email: string,
   orgId: string,
-  role: "owner" | "admin" | "member" | "editor" | "viewer" = "member",
-  dashboardIds: string[] = []
+  role: "admin" | "member" = "member",
+  dashboardPermissions: Array<{ dashboard_id: string; permission: "view" | "edit" }> = [],
+  collectionPermissions: Array<{ collection_id: string; permission: "view" | "edit" }> = []
 ) {
   try {
     const { data, error } = await supabase.rpc("create_invitation", {
       p_email: email,
       p_org_id: orgId,
       p_role: role,
-      p_dashboard_ids: dashboardIds,
+      p_dashboard_permissions: dashboardPermissions,
+      p_collection_permissions: collectionPermissions,
     });
 
     if (error) {
@@ -219,20 +241,22 @@ export async function acceptInvitation(token: string) {
 /**
  * Reject an invitation
  */
-export async function rejectInvitation(token: string) {
+export async function declineInvitation(token: string) {
   try {
-    const { data, error } = await supabase.rpc("reject_invitation", {
+    const { data, error } = await supabase.rpc("decline_invitation", {
       p_token: token,
     });
 
     if (error) {
-      console.error("[queries] Error rejecting invitation:", error);
+      console.error("[queries] Error declining invitation:", error);
       return null;
     }
 
     return data;
   } catch (error) {
-    console.error("[queries] Unexpected error rejecting invitation:", error);
+    console.error("[queries] Unexpected error declining invitation:", error);
     return null;
   }
 }
+
+export const rejectInvitation = declineInvitation;

@@ -7,12 +7,13 @@ import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import {
-  BarChart3, LineChart as LineIcon, PieChart as PieIcon, Table2, Gauge, Activity,
+  BarChart3, LineChart as LineIcon, PieChart as PieIcon, Table2, Gauge,
   Trash2, Copy, Settings2, Save, Undo2, Redo2, Eye, ChevronLeft, Sparkles,
-  GripVertical,
+  GripVertical, PanelsTopLeft,
 } from "lucide-react";
 import { Link } from "react-router-dom";
 import {
@@ -28,6 +29,9 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { GenerateDashboardModal } from "@/features/ai-dashboard/GenerateDashboardModal";
+import type { GeneratedDashboardWidget } from "@/features/ai-dashboard/generateDashboard";
+import { useWorkspacePermissions } from "@/hooks/useWorkspacePermissions";
 import {
   DndContext, DragEndEvent, DragOverlay, DragStartEvent,
   PointerSensor, useDraggable, useDroppable, useSensor, useSensors,
@@ -37,7 +41,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 
-type WidgetType = "stat" | "line" | "bar" | "pie" | "table" | "gauge";
+type WidgetType = "stat" | "bar_chart" | "line_chart" | "pie_chart" | "table";
 type WidgetConfig = {
   value?: string;
   delta?: string;
@@ -47,7 +51,6 @@ type WidgetConfig = {
   segments?: Array<{ name: string; value: number }>;
   columns?: string[];
   rows?: Array<Record<string, any>>;
-  activity?: Array<{ who: string; what: string; when: string }>;
   collection_id?: string | null;
   xKey?: string | null;
   yKey?: string | null;
@@ -57,12 +60,40 @@ type Widget = { id: string; type: WidgetType; title: string; w: number; h: numbe
 
 const palette: { type: WidgetType; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { type: "stat", label: "Stat card", icon: Gauge },
-  { type: "line", label: "Line chart", icon: LineIcon },
-  { type: "bar", label: "Bar chart", icon: BarChart3 },
-  { type: "pie", label: "Pie chart", icon: PieIcon },
+  { type: "line_chart", label: "Line chart", icon: LineIcon },
+  { type: "bar_chart", label: "Bar chart", icon: BarChart3 },
+  { type: "pie_chart", label: "Pie chart", icon: PieIcon },
   { type: "table", label: "Table", icon: Table2 },
-  { type: "gauge", label: "Activity feed", icon: Activity },
 ];
+
+const WIDGET_TYPES = ["stat", "bar_chart", "line_chart", "pie_chart", "table"] as const;
+const widgetTypeLabels: Record<WidgetType, string> = {
+  stat: "stat",
+  bar_chart: "bar chart",
+  line_chart: "line chart",
+  pie_chart: "pie chart",
+  table: "table",
+};
+
+function normalizeWidgetType(type: unknown): WidgetType | null {
+  if (type === "bar") return "bar_chart";
+  if (type === "line") return "line_chart";
+  if (type === "pie") return "pie_chart";
+  return WIDGET_TYPES.includes(type as WidgetType) ? (type as WidgetType) : null;
+}
+
+function normalizeWidget(widget: unknown): Widget | null {
+  if (!widget || typeof widget !== "object") return null;
+  const raw = widget as Widget & { type?: unknown };
+  const type = normalizeWidgetType(raw.type);
+  if (!type) return null;
+  return { ...raw, type };
+}
+
+function validateWidgetsForSave(items: Widget[]): string | null {
+  const invalid = items.find((widget) => !normalizeWidgetType(widget.type));
+  return invalid ? `Invalid widget type "${String(invalid.type)}".` : null;
+}
 
 const initial: Widget[] = [];
 
@@ -70,16 +101,14 @@ const defaultWidgetConfig = (type: WidgetType): WidgetConfig | undefined => {
   switch (type) {
     case "stat":
       return { value: "", delta: "", collection_id: null, valueKey: null, aggregate: "count", columns: [], rows: [] };
-    case "line":
+    case "line_chart":
       return { series: [], collection_id: null, xKey: null, yKey: null, columns: [], rows: [] };
-    case "bar":
+    case "bar_chart":
       return { series: [], collection_id: null, xKey: null, yKey: null, columns: [], rows: [] };
-    case "pie":
+    case "pie_chart":
       return { segments: [], collection_id: null, xKey: null, yKey: null, columns: [], rows: [] };
     case "table":
       return { columns: [], rows: [], collection_id: null };
-    case "gauge":
-      return { activity: [], collection_id: null };
     default:
       return undefined;
   }
@@ -134,7 +163,7 @@ function WidgetBody({ widget }: { widget: Widget }) {
     );
   }
 
-  if (widget.type === "line" || widget.type === "bar") {
+  if (widget.type === "line_chart" || widget.type === "bar_chart") {
     const rows = config?.rows ?? [];
     const xKey = config?.xKey;
     const yKey = config?.yKey;
@@ -142,7 +171,7 @@ function WidgetBody({ widget }: { widget: Widget }) {
     if (!xKey || !yKey || !data.length) return noData;
     return (
       <ResponsiveContainer width="100%" height="100%">
-        {widget.type === "line" ? (
+        {widget.type === "line_chart" ? (
           <AreaChart data={data}>
             <defs>
               <linearGradient id="ln" x1="0" y1="0" x2="0" y2="1">
@@ -169,7 +198,7 @@ function WidgetBody({ widget }: { widget: Widget }) {
     );
   }
 
-  if (widget.type === "pie") {
+  if (widget.type === "pie_chart") {
     const rows = config?.rows ?? [];
     const categoryKey = config?.xKey;
     const valueKey = config?.yKey;
@@ -218,23 +247,6 @@ function WidgetBody({ widget }: { widget: Widget }) {
             ))}
           </tbody>
         </table>
-      </div>
-    );
-  }
-
-  if (widget.type === "gauge") {
-    const activity = config?.activity ?? [];
-    if (!activity.length) return noData;
-    return (
-      <div className="space-y-2 text-xs">
-        {activity.map((item, i) => (
-          <div key={i} className="flex items-center gap-2">
-            <div className="h-1.5 w-1.5 rounded-full bg-primary" />
-            <span className="font-medium truncate">{item.who}</span>
-            <span className="text-muted-foreground truncate flex-1">{item.what}</span>
-            <span className="text-muted-foreground">{item.when}</span>
-          </div>
-        ))}
       </div>
     );
   }
@@ -411,6 +423,7 @@ export default function Builder() {
   const { create, update: updateDashboard } = useDashboards();
   const { currentOrgId, user } = useAuth();
   const { collections } = useCollections();
+  const { canCreateContent, canManageWorkspace, isAdmin } = useWorkspacePermissions();
 
   const [dashboardId, setDashboardId] = useState<string | null>(routeId ?? null);
   const [widgets, setWidgets] = useState<Widget[]>(routeId ? [] : initial);
@@ -419,41 +432,89 @@ export default function Builder() {
   const [saving, setSaving] = useState(false);
   const [loadingDb, setLoadingDb] = useState(Boolean(routeId));
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
   const [previewWidgets, setPreviewWidgets] = useState<Widget[]>([]);
   const [activeDrag, setActiveDrag] = useState<{ kind: "palette"; type: WidgetType } | { kind: "widget"; id: string } | null>(null);
+  const [canEditCurrentDashboard, setCanEditCurrentDashboard] = useState(!routeId && canCreateContent);
+  const [widgetsPanelOpen, setWidgetsPanelOpen] = useState(false);
+  const [widgetsPanelHover, setWidgetsPanelHover] = useState(false);
+  const [dashboardLoadError, setDashboardLoadError] = useState<string | null>(null);
   const gridRef = useRef<HTMLDivElement>(null);
   const selected = widgets.find((w) => w.id === selectedId);
+  const readOnly = !canEditCurrentDashboard;
+  const showWidgetsPanel = widgetsPanelOpen || widgetsPanelHover;
 
   // Load existing dashboard
   useEffect(() => {
     if (!routeId) return;
     let cancelled = false;
     setLoadingDb(true);
+    setDashboardLoadError(null);
     fetchDashboard(routeId).then((db) => {
       if (cancelled) return;
       if (db) {
         setName(db.name);
         setDashboardId(db.id);
-        const layout = Array.isArray(db.layout) ? (db.layout as Widget[]) : [];
+        const layout = Array.isArray(db.layout)
+          ? db.layout.map(normalizeWidget).filter(Boolean) as Widget[]
+          : [];
         setWidgets(layout);
       } else {
-        toast.error("Dashboard not found");
-        navigate("/app/dashboards", { replace: true });
+        setDashboardLoadError("Dashboard not found or you do not have access.");
       }
       setLoadingDb(false);
     });
     return () => { cancelled = true; };
-  }, [routeId, navigate]);
+  }, [routeId]);
+
+  useEffect(() => {
+    if (!dashboardId) {
+      setCanEditCurrentDashboard(canCreateContent);
+      return;
+    }
+    if (canManageWorkspace) {
+      setCanEditCurrentDashboard(true);
+      return;
+    }
+    if (!isAdmin || !user) {
+      setCanEditCurrentDashboard(false);
+      return;
+    }
+
+    let cancelled = false;
+    supabase
+      .from("dashboard_permissions")
+      .select("permission")
+      .eq("dashboard_id", dashboardId)
+      .eq("user_id", user.id)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        if (error) console.error("[builder] dashboard permission lookup failed", error);
+        setCanEditCurrentDashboard(data?.permission === "edit");
+      });
+
+    return () => { cancelled = true; };
+  }, [canCreateContent, canManageWorkspace, dashboardId, isAdmin, user]);
 
   const handleSave = async () => {
     console.debug("[builder] Save clicked", { dashboardId, name, widgetCount: widgets.length });
     if (!user) {
       toast.error("You must be signed in to save dashboards");
-      return;
+      return null;
     }
     if (!currentOrgId) {
       toast.error("Select a workspace before saving");
-      return;
+      return null;
+    }
+    if (!canEditCurrentDashboard) {
+      toast.error("You only have read-only access to this dashboard");
+      return null;
+    }
+    const validationError = validateWidgetsForSave(widgets);
+    if (validationError) {
+      toast.error(validationError);
+      return null;
     }
     setSaving(true);
     try {
@@ -463,6 +524,7 @@ export default function Builder() {
         if (updated) {
           console.debug("[builder] Dashboard updated successfully");
           toast.success("Dashboard saved");
+          return updated.id;
         } else {
           console.warn("[builder] updateDashboard returned null/error (check error message in console)");
         }
@@ -474,6 +536,7 @@ export default function Builder() {
           setDashboardId(created.id);
           toast.success("Dashboard created");
           navigate(`/app/dashboards/${created.id}`, { replace: true });
+          return created.id;
         } else {
           console.warn("[builder] create returned null/error (check error message in console)");
         }
@@ -484,14 +547,55 @@ export default function Builder() {
     } finally {
       setSaving(false);
     }
+    return null;
+  };
+
+  const openAiGenerator = async () => {
+    if (loadingDb || saving) return;
+    if (!canEditCurrentDashboard && dashboardId) {
+      toast.error("You only have read-only access to this dashboard");
+      return;
+    }
+    if (!currentOrgId) {
+      toast.error("Select a workspace before generating widgets");
+      return;
+    }
+    if (!dashboardId) {
+      const savedId = await handleSave();
+      if (!savedId) return;
+    }
+    setAiOpen(true);
+  };
+
+  const handleAiSuccess = async (generatedWidgets: GeneratedDashboardWidget[]) => {
+    const activeDashboardId = dashboardId ?? routeId;
+    const normalizedGenerated = generatedWidgets.map(normalizeWidget).filter(Boolean) as Widget[];
+    setWidgets((current) => [...current, ...normalizedGenerated]);
+    setSelectedId(normalizedGenerated[0]?.id ?? null);
+
+    if (activeDashboardId) {
+      const refreshed = await fetchDashboard(activeDashboardId);
+      if (refreshed) {
+        const layout = Array.isArray(refreshed.layout)
+          ? refreshed.layout.map(normalizeWidget).filter(Boolean) as Widget[]
+          : [];
+        setWidgets(layout);
+      }
+    }
+
+    toast.success("AI widgets added to the dashboard");
+    setAiOpen(false);
   };
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
 
-  const update = (id: string, patch: Partial<Widget>) =>
+  const update = (id: string, patch: Partial<Widget>) => {
+    if (readOnly) return;
     setWidgets((ws) => ws.map((w) => (w.id === id ? { ...w, ...patch } : w)));
+  };
 
   const duplicate = (id: string) => {
+    if (readOnly) return;
     const w = widgets.find((x) => x.id === id);
     if (!w) return;
     const nid = `w_${Date.now()}`;
@@ -500,6 +604,7 @@ export default function Builder() {
     setSelectedId(nid);
   };
   const remove = (id: string) => {
+    if (readOnly) return;
     setWidgets((ws) => ws.filter((w) => w.id !== id));
     if (selectedId === id) setSelectedId(null);
   };
@@ -604,7 +709,7 @@ export default function Builder() {
   };
 
   return (
-    <>
+    <div className="flex min-h-screen flex-1 flex-col bg-background">
       <Topbar
         breadcrumb={[{ label: "Dashboards" }, { label: name }]}
         actions={
@@ -616,16 +721,48 @@ export default function Builder() {
             <Button variant="ghost" size="icon" className="h-8 w-8"><Redo2 className="h-4 w-4" /></Button>
             <div className="h-5 w-px bg-border mx-1" />
             <Button variant="outline" size="sm" className="gap-1.5" onClick={handlePreview}><Eye className="h-3.5 w-3.5" />Preview</Button>
-            <Button size="sm" className="gap-1.5 bg-gradient-primary shadow-glow" onClick={handleSave} disabled={saving || loadingDb}>
-              <Save className="h-3.5 w-3.5" />{saving ? "Saving…" : "Save"}
-            </Button>
+            {readOnly ? (
+              <Badge variant="secondary">Read-only mode</Badge>
+            ) : (
+              <Button size="sm" className="gap-1.5 bg-gradient-primary shadow-glow" onClick={handleSave} disabled={saving || loadingDb}>
+                <Save className="h-3.5 w-3.5" />{saving ? "Saving…" : "Save"}
+              </Button>
+            )}
           </div>
         }
       />
-      <DndContext sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setActiveDrag(null)}>
-        <div className="flex-1 flex min-h-0">
-          {/* Left palette */}
-          <aside className="w-56 border-r border-border bg-card/60 backdrop-blur-xl p-3 space-y-1 overflow-y-auto scrollbar-thin">
+      <DndContext
+        sensors={sensors}
+        onDragStart={readOnly ? undefined : onDragStart}
+        onDragEnd={readOnly ? undefined : onDragEnd}
+        onDragCancel={() => setActiveDrag(null)}
+      >
+        <div className="relative flex h-[calc(100vh-3.5rem)] min-h-[520px] flex-1 overflow-hidden">
+          {/* Left palette trigger */}
+          {!readOnly && (
+            <div
+              className="absolute inset-y-0 left-0 z-30 w-4"
+              onMouseEnter={() => setWidgetsPanelHover(true)}
+            />
+          )}
+          {!readOnly && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="absolute left-4 top-4 z-40 h-8 gap-1.5 bg-card/90 backdrop-blur-xl shadow-card"
+              onClick={() => setWidgetsPanelOpen((open) => !open)}
+            >
+              <PanelsTopLeft className="h-3.5 w-3.5" /> Widgets
+            </Button>
+          )}
+          <aside
+            className={cn(
+              "absolute inset-y-0 left-0 z-30 w-64 border-r border-border bg-card/90 backdrop-blur-xl p-3 space-y-1 overflow-y-auto scrollbar-thin shadow-xl transition-transform duration-300 ease-in-out",
+              showWidgetsPanel ? "translate-x-0" : "-translate-x-full"
+            )}
+            onMouseEnter={() => setWidgetsPanelHover(true)}
+            onMouseLeave={() => setWidgetsPanelHover(false)}
+          >
             <div className="px-2 pt-1 pb-2">
               <Input
                 value={name}
@@ -633,20 +770,49 @@ export default function Builder() {
                 className="border-0 bg-transparent px-0 h-7 text-base font-semibold focus-visible:ring-0"
               />
             </div>
-            <div className="px-2 pt-2 pb-1 text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
-              Widgets · drag onto canvas
-            </div>
-            {palette.map((p) => (
-              <PaletteItem key={p.type} type={p.type} label={p.label} Icon={p.icon} />
-            ))}
-            <Button variant="outline" size="sm" className="w-full mt-3 gap-1.5">
-              <Sparkles className="h-3.5 w-3.5 text-primary" />Generate with AI
-            </Button>
+            {readOnly ? (
+              <div className="rounded-md border border-border bg-secondary/40 px-2.5 py-2 text-xs text-muted-foreground">
+                You can view this dashboard, but editing is disabled.
+              </div>
+            ) : (
+              <>
+                <div className="px-2 pt-2 pb-1 text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
+                  Widgets · drag onto canvas
+                </div>
+                {palette.map((p) => (
+                  <PaletteItem key={p.type} type={p.type} label={p.label} Icon={p.icon} />
+                ))}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full mt-3 gap-1.5"
+                  onClick={openAiGenerator}
+                  disabled={saving || loadingDb}
+                >
+                  <Sparkles className="h-3.5 w-3.5 text-primary" />Generate with AI
+                </Button>
+              </>
+            )}
           </aside>
 
           {/* Canvas */}
-          <main className="flex-1 overflow-auto scrollbar-thin bg-background">
+          <main className="min-w-0 flex-1 overflow-auto scrollbar-thin bg-background">
             <div className="min-h-full p-8">
+              {loadingDb ? (
+                <div className="grid min-h-[420px] place-items-center rounded-xl border border-border/70 bg-card/30 text-sm text-muted-foreground">
+                  Loading dashboard...
+                </div>
+              ) : dashboardLoadError ? (
+                <div className="grid min-h-[420px] place-items-center rounded-xl border border-border/70 bg-card/30 p-8 text-center">
+                  <div>
+                    <h2 className="text-base font-semibold text-foreground">Dashboard unavailable</h2>
+                    <p className="mt-2 text-sm text-muted-foreground">{dashboardLoadError}</p>
+                    <Button variant="outline" size="sm" className="mt-4" asChild>
+                      <Link to="/app/dashboards">Back to dashboards</Link>
+                    </Button>
+                  </div>
+                </div>
+              ) : (
               <div
                 className="relative grid-bg rounded-xl border border-border/70 bg-card/30 p-4 mx-auto"
                 style={{ maxWidth: 1100 }}
@@ -660,9 +826,9 @@ export default function Builder() {
                         widget={w}
                         selected={selectedId === w.id}
                         onSelect={() => setSelectedId(w.id)}
-                        onDuplicate={() => duplicate(w.id)}
-                        onRemove={() => remove(w.id)}
-                        onResize={(nw, nh) => update(w.id, { w: nw, h: nh })}
+                        onDuplicate={() => !readOnly && duplicate(w.id)}
+                        onRemove={() => !readOnly && remove(w.id)}
+                        onResize={(nw, nh) => !readOnly && update(w.id, { w: nw, h: nh })}
                         gridRef={gridRef}
                       />
                     ))}
@@ -674,12 +840,13 @@ export default function Builder() {
                   </CanvasDroppable>
                 </SortableContext>
               </div>
+              )}
             </div>
           </main>
 
           {/* Right inspector */}
-          <aside className="w-72 border-l border-border bg-card/60 backdrop-blur-xl p-4 overflow-y-auto scrollbar-thin">
-            {selected ? (
+          {selected && (
+          <aside className="w-72 shrink-0 border-l border-border bg-card/60 backdrop-blur-xl p-4 overflow-y-auto scrollbar-thin animate-fade-in">
               <div className="space-y-5 animate-fade-in" key={selected.id}>
                 <div className="flex items-center gap-2">
                   <Settings2 className="h-3.5 w-3.5 text-muted-foreground" />
@@ -690,6 +857,7 @@ export default function Builder() {
                   <Input
                     value={selected.title}
                     onChange={(e) => update(selected.id, { title: e.target.value })}
+                    readOnly={readOnly}
                     className="h-8 text-sm"
                   />
                 </div>
@@ -698,6 +866,7 @@ export default function Builder() {
                   <Slider
                     value={[selected.w]} min={2} max={12} step={1}
                     onValueChange={([v]) => update(selected.id, { w: v })}
+                    disabled={readOnly}
                   />
                 </div>
                 <div className="space-y-2">
@@ -705,14 +874,15 @@ export default function Builder() {
                   <Slider
                     value={[selected.h]} min={2} max={8} step={1}
                     onValueChange={([v]) => update(selected.id, { h: v })}
+                    disabled={readOnly}
                   />
                 </div>
                 <div className="rounded-lg border border-border bg-secondary/40 p-3 text-xs text-muted-foreground space-y-1">
-                  <div>Type · <span className="text-foreground capitalize">{selected.type}</span></div>
+                  <div>Type · <span className="text-foreground capitalize">{widgetTypeLabels[selected.type]}</span></div>
                   <div>Size · <span className="text-foreground">{selected.w} × {selected.h}</span></div>
                   <div className="space-y-2">
                     <div className="text-[11px] text-muted-foreground">Data source</div>
-                    {(selected.type === 'table' || selected.type === 'line' || selected.type === 'bar' || selected.type === 'pie' || selected.type === 'stat') ? (
+                    {(selected.type === "table" || selected.type === "line_chart" || selected.type === "bar_chart" || selected.type === "pie_chart" || selected.type === "stat") ? (
                       <div className="flex flex-col gap-2">
                         <Select onValueChange={(val) => update(selected.id, { config: { ...(selected.config || {}), collection_id: val, xKey: null, yKey: null, columns: [], rows: [] } })}>
                           <SelectTrigger>
@@ -727,7 +897,7 @@ export default function Builder() {
                         {selected.type !== 'stat' ? (
                           selected.config?.collection_id ? (
                             <div className="space-y-3">
-                              {(selected.type === 'line' || selected.type === 'bar') && (
+                              {(selected.type === "line_chart" || selected.type === "bar_chart") && (
                                 <>
                                   <div className="space-y-2">
                                     <Label className="text-xs">X axis</Label>
@@ -757,7 +927,7 @@ export default function Builder() {
                                   </div>
                                 </>
                               )}
-                              {selected.type === 'pie' && (
+                              {selected.type === "pie_chart" && (
                                 <>
                                   <div className="space-y-2">
                                     <Label className="text-xs">Category field</Label>
@@ -866,7 +1036,7 @@ export default function Builder() {
                       <Button size="sm" variant="outline" onClick={() => loadSampleForWidget(selected)}>Load sample</Button>
                     </div>
                   </div>
-                ) : (
+                ) : !readOnly ? (
                   <div className="flex gap-2">
                     <Button variant="outline" size="sm" className="flex-1" onClick={() => duplicate(selected.id)}>
                       <Copy className="h-3.5 w-3.5 mr-1.5" /> Duplicate
@@ -875,15 +1045,10 @@ export default function Builder() {
                       <Trash2 className="h-3.5 w-3.5 mr-1.5" /> Delete
                     </Button>
                   </div>
-                )}
+                ) : null}
               </div>
-            ) : (
-              <div className="text-center text-xs text-muted-foreground pt-12">
-                <Settings2 className="h-5 w-5 mx-auto mb-2 opacity-40" />
-                Select a widget to edit
-              </div>
-            )}
           </aside>
+          )}
         </div>
 
         <DragOverlay>
@@ -928,7 +1093,14 @@ export default function Builder() {
             </div>
           </div>
         )}
+        <GenerateDashboardModal
+          open={aiOpen}
+          onOpenChange={setAiOpen}
+          orgId={currentOrgId}
+          dashboardId={dashboardId}
+          onSuccess={handleAiSuccess}
+        />
       </DndContext>
-    </>
+    </div>
   );
 }

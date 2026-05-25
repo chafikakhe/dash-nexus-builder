@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
+import { useWorkspacePermissions } from "@/hooks/useWorkspacePermissions";
 
 export type Dashboard = {
   id: string;
@@ -11,6 +12,7 @@ export type Dashboard = {
   layout: any;
   created_at: string;
   updated_at: string;
+  permission?: "view" | "edit";
 };
 
 /**
@@ -20,6 +22,7 @@ export type Dashboard = {
  */
 export function useDashboards() {
   const { currentOrgId, user } = useAuth();
+  const { canCreateContent, canManageWorkspace, isOwner } = useWorkspacePermissions();
   const [dashboards, setDashboards] = useState<Dashboard[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -42,8 +45,24 @@ export function useDashboards() {
         console.error("[dashboards] Fetch error:", error.code, error.message, error);
         toast.error(`Failed to load dashboards: ${error.message}`);
       } else {
-        console.debug("[dashboards] Fetched", data?.length ?? 0, "dashboards");
-        setDashboards((data ?? []) as Dashboard[]);
+        const rows = (data ?? []) as Dashboard[];
+        if (isOwner) {
+          setDashboards(rows.map((dashboard) => ({ ...dashboard, permission: "edit" })));
+        } else if (user && rows.length > 0) {
+          const { data: permissions, error: permissionError } = await supabase
+            .from("dashboard_permissions")
+            .select("dashboard_id, permission")
+            .eq("user_id", user.id)
+            .in("dashboard_id", rows.map((dashboard) => dashboard.id));
+          if (permissionError) console.error("[dashboards] Permission lookup error:", permissionError);
+          const permissionByDashboard = new Map(
+            (permissions ?? []).map((permission) => [permission.dashboard_id, permission.permission as "view" | "edit"])
+          );
+          setDashboards(rows.map((dashboard) => ({ ...dashboard, permission: permissionByDashboard.get(dashboard.id) ?? "view" })));
+        } else {
+          setDashboards(rows);
+        }
+        console.debug("[dashboards] Fetched", rows.length, "dashboards");
       }
     } catch (e: any) {
       console.error("[dashboards] Unexpected fetch error:", e);
@@ -51,14 +70,14 @@ export function useDashboards() {
     } finally {
       setLoading(false);
     }
-  }, [currentOrgId]);
+  }, [currentOrgId, isOwner, user]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
   /**
    * Create a new dashboard with optional initial layout.
    * The dashboard will be associated with the current org and created_by user.
-   * If RLS blocks this, you likely lack owner/admin/editor role in org_members.
+   * If RLS blocks this, you likely lack owner role in org_members.
    */
   const create = useCallback(
     async (input: { name: string; description?: string; layout?: any }) => {
@@ -87,8 +106,8 @@ export function useDashboards() {
           toast.error("You don't have access to this workspace");
           return null;
         }
-        if (membership.role === "viewer") {
-          toast.error("You need editor permissions to create dashboards");
+        if (!canCreateContent || membership.role !== "owner") {
+          toast.error("Only workspace owners can create dashboards");
           return null;
         }
       } catch (e) {
@@ -109,28 +128,29 @@ export function useDashboards() {
         if (error) {
           console.error("[dashboards] Insert error:", error.code, error.message, error);
           if (error.code === "PGRST301" || error.message.includes("row level security")) {
-            toast.error("Permission denied. Check your workspace role (need owner/admin/editor).");
+            toast.error("Permission denied. Only workspace owners can create dashboards.");
           } else {
             toast.error(`Failed to create dashboard: ${error.message}`);
           }
           return null;
         }
         console.debug("[dashboards] Dashboard created successfully:", data.id);
-        setDashboards((prev) => [data as Dashboard, ...prev]);
-        return data as Dashboard;
+        const created = { ...(data as Dashboard), permission: "edit" as const };
+        setDashboards((prev) => [created, ...prev]);
+        return created;
       } catch (e: any) {
         console.error("[dashboards] Unexpected create error:", e);
         toast.error("Failed to create dashboard");
         return null;
       }
     },
-    [currentOrgId, user]
+    [canCreateContent, currentOrgId, user]
   );
 
   /**
    * Update an existing dashboard (name, description, or layout).
    * Called when saving dashboard layout changes from the builder.
-   * If RLS blocks this, you likely lack owner/admin/editor role.
+   * If RLS blocks this, you likely lack owner role or edit access to this dashboard.
    */
   const update = useCallback(
     async (id: string, patch: Partial<Pick<Dashboard, "name" | "description" | "layout">>) => {
@@ -157,9 +177,18 @@ export function useDashboards() {
           toast.error("You don't have access to this workspace");
           return null;
         }
-        if (membership.role === "viewer") {
-          toast.error("You need editor permissions to update dashboards");
-          return null;
+        if (!canManageWorkspace || membership.role !== "owner") {
+          const { data: permission, error: permissionError } = await supabase
+            .from("dashboard_permissions")
+            .select("permission")
+            .eq("dashboard_id", id)
+            .eq("user_id", user.id)
+            .maybeSingle();
+          if (permissionError) console.error("[dashboards] permission check error", permissionError);
+          if (permission?.permission !== "edit") {
+            toast.error("You do not have edit access to this dashboard");
+            return null;
+          }
         }
       } catch (e) {
         console.error("[dashboards] membership check unexpected error", e);
@@ -175,7 +204,7 @@ export function useDashboards() {
         if (error) {
           console.error("[dashboards] Update error:", error.code, error.message, error);
           if (error.code === "PGRST301" || error.message.includes("row level security")) {
-            toast.error("Permission denied. Check your workspace role (need owner/admin/editor).");
+            toast.error("Permission denied. You need dashboard edit access.");
           } else {
             toast.error(`Failed to save dashboard: ${error.message}`);
           }
@@ -192,7 +221,7 @@ export function useDashboards() {
         return null;
       }
     },
-    [currentOrgId, user]
+    [canManageWorkspace, currentOrgId, user]
   );
 
   const remove = useCallback(async (id: string) => {
@@ -202,7 +231,7 @@ export function useDashboards() {
       if (error) {
         console.error("[dashboards] Delete error:", error.message, error);
         if (error.code === "PGRST301" || error.message.includes("row level security")) {
-          toast.error("Permission denied. Check your workspace role (need owner/admin).");
+          toast.error("Permission denied. You need dashboard edit access.");
         } else {
           toast.error(`Failed to delete dashboard: ${error.message}`);
         }

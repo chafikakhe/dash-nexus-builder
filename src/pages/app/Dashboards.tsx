@@ -17,9 +17,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
+import { useWorkspacePermissions } from "@/hooks/useWorkspacePermissions";
 
 export default function Dashboards() {
   const { dashboards, loading, create, remove } = useDashboards();
+  const { canCreateContent, canEditWorkspaceContent, isReadOnlyMember, isAdmin } = useWorkspacePermissions();
   const navigate = useNavigate();
 
   const [query, setQuery] = useState("");
@@ -50,9 +52,13 @@ export default function Dashboards() {
       <Topbar
         breadcrumb={[{ label: "Workspace" }, { label: "Dashboards" }]}
         actions={
-          <Button size="sm" className="bg-gradient-primary shadow-glow" onClick={() => setOpenNew(true)}>
-            <Plus className="h-3.5 w-3.5 mr-1.5" />New dashboard
-          </Button>
+          canCreateContent ? (
+            <Button size="sm" className="bg-gradient-primary shadow-glow" onClick={() => setOpenNew(true)}>
+              <Plus className="h-3.5 w-3.5 mr-1.5" />New dashboard
+            </Button>
+          ) : (
+            <Badge variant="secondary">{isAdmin ? "Assigned access" : "Read-only mode"}</Badge>
+          )
         }
       />
       <main className="flex-1 p-6 space-y-5 animate-fade-in">
@@ -71,9 +77,11 @@ export default function Dashboards() {
                 placeholder="Search dashboards…"
               />
             </div>
-            <Button variant="outline" size="sm" className="gap-1.5">
-              <Sparkles className="h-3.5 w-3.5 text-primary" />Generate with AI
-            </Button>
+            {canCreateContent && (
+              <Button variant="outline" size="sm" className="gap-1.5">
+                <Sparkles className="h-3.5 w-3.5 text-primary" />Generate with AI
+              </Button>
+            )}
           </div>
         </div>
 
@@ -84,18 +92,21 @@ export default function Dashboards() {
         ) : filtered.length === 0 ? (
           <div className="rounded-xl border border-dashed border-border p-12 text-center">
             <PanelsTopLeft className="h-8 w-8 text-muted-foreground mx-auto mb-3 opacity-50" />
-            <h3 className="font-semibold">No dashboards yet</h3>
+            <h3 className="font-semibold">No dashboards available</h3>
             <p className="text-sm text-muted-foreground mt-1">
-              Create your first dashboard to start visualizing data.
+              {isReadOnlyMember || isAdmin ? "Ask an owner to share a dashboard with you." : "Create your first dashboard to start visualizing data."}
             </p>
-            <Button size="sm" className="mt-4 bg-gradient-primary" onClick={() => setOpenNew(true)}>
-              <Plus className="h-3.5 w-3.5 mr-1.5" /> New dashboard
-            </Button>
+            {canCreateContent && (
+              <Button size="sm" className="mt-4 bg-gradient-primary" onClick={() => setOpenNew(true)}>
+                <Plus className="h-3.5 w-3.5 mr-1.5" /> New dashboard
+              </Button>
+            )}
           </div>
         ) : (
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {filtered.map((d) => {
               const widgetCount = Array.isArray(d.layout) ? d.layout.length : 0;
+              const canEditDashboard = canEditWorkspaceContent || (isAdmin && d.permission === "edit");
               return (
                 <div
                   key={d.id}
@@ -119,6 +130,7 @@ export default function Dashboards() {
                           {d.description || "No description"}
                         </p>
                       </Link>
+                      {canEditDashboard && (
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -141,6 +153,7 @@ export default function Dashboards() {
                           </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
+                      )}
                     </div>
                     <div className="flex items-center gap-2 mt-3 text-xs text-muted-foreground">
                       <Badge variant="secondary" className="font-normal">{widgetCount} widgets</Badge>

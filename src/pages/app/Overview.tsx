@@ -9,6 +9,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 import { useDashboards } from "@/hooks/useDashboards";
 import { formatDistanceToNow } from "date-fns";
+import { PendingInvitationsCard } from "@/components/invitations/PendingInvitationsCard";
 
 export default function Overview() {
   const { user, orgs, currentOrgId } = useAuth();
@@ -65,6 +66,8 @@ export default function Overview() {
           <h1 className="text-2xl font-bold tracking-tight">Welcome back, {greetingName} 👋</h1>
           <p className="text-sm text-muted-foreground mt-1">Here's what's happening across your workspace.</p>
         </div>
+
+        <PendingInvitationsCard />
 
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           {stats.map((s) => (
