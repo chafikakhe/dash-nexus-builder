@@ -7,7 +7,9 @@ export function useWorkspacePermissions() {
   const role = currentOrg?.role ?? null;
 
   return useMemo(() => {
-    const canManageWorkspace = role === "owner";
+    const canManageWorkspace = role === "owner" || role === "admin";
+    const canCreateContent = role === "owner" || role === "admin";
+    const canEditWorkspaceContent = role === "owner" || role === "admin";
     const isReadOnlyMember = Boolean(role && role !== "owner" && role !== "admin");
 
     return {
@@ -16,8 +18,8 @@ export function useWorkspacePermissions() {
       isAdmin: role === "admin",
       canManageWorkspace,
       canInvite: role === "owner" || role === "admin",
-      canCreateContent: canManageWorkspace,
-      canEditWorkspaceContent: canManageWorkspace,
+      canCreateContent,
+      canEditWorkspaceContent,
       canViewMembers: role === "owner" || role === "admin",
       isReadOnlyMember,
     };

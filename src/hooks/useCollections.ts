@@ -14,6 +14,7 @@ export type Collection = {
   name: string;
   schema: Field[];
   created_at: string;
+  created_by?: string | null;
   permission?: "view" | "edit";
 };
 
@@ -110,25 +111,34 @@ export function useCollections() {
           toast.error("You don't have access to this workspace");
           return null;
         }
-        if (!canCreateContent || membership.role !== "owner") {
-          toast.error("Only workspace owners can create collections");
+        if (!canCreateContent || !["owner", "admin"].includes(membership.role)) {
+          toast.error("Only workspace owners or admins can create collections");
           return null;
         }
       } catch (e) {
         console.error("[collections] membership check unexpected error", e);
       }
       try {
+        const insertPayload = {
+          org_id: currentOrgId,
+          name,
+          schema,
+          created_by: user.id,
+        };
+        console.debug("[collections] Insert payload:", insertPayload);
+
         const { data, error } = await supabase
           .from("collections")
-          .insert({ org_id: currentOrgId, name, schema })
+          .insert(insertPayload)
           .select("*")
           .single();
 
         if (error) {
           console.error("[collections] Insert error:", error.code, error.message, error);
+          console.error("[collections] Insert payload that failed:", insertPayload);
           // Show detailed error for RLS violations
           if (error.code === "PGRST301" || error.message.includes("row level security")) {
-            toast.error("Permission denied. Check your workspace role.");
+            toast.error(import.meta.env.DEV ? `Permission denied: ${error.message}` : "Permission denied. Check your workspace role.");
           } else {
             toast.error(`Failed to create collection: ${error.message}`);
           }
@@ -151,7 +161,7 @@ export function useCollections() {
         return col;
       } catch (e: any) {
         console.error("[collections] Unexpected create error:", e);
-        toast.error("Failed to create collection");
+        toast.error(import.meta.env.DEV && e instanceof Error ? `Failed to create collection: ${e.message}` : "Failed to create collection");
         return null;
       }
     },

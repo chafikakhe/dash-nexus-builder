@@ -154,8 +154,8 @@ export function useDashboards() {
           toast.error("You don't have access to this workspace");
           return null;
         }
-        if (!canCreateContent || membership.role !== "owner") {
-          toast.error("Only workspace owners can create dashboards");
+        if (!canCreateContent || !["owner", "admin"].includes(membership.role)) {
+          toast.error("Only workspace owners or admins can create dashboards");
           return null;
         }
       } catch (e) {
@@ -226,7 +226,7 @@ export function useDashboards() {
           toast.error("You don't have access to this workspace");
           return null;
         }
-        if (!canManageWorkspace || membership.role !== "owner") {
+        if (!canManageWorkspace || !["owner", "admin"].includes(membership.role)) {
           const { data: permission, error: permissionError } = await supabase
             .from("dashboard_permissions")
             .select("permission")
