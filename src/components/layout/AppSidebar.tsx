@@ -2,7 +2,7 @@ import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useState } from "react";
 import {
   LayoutDashboard, Database, Sparkles, Settings, PanelsTopLeft, Activity, Users,
-  Plus, ChevronsUpDown, Check, LogOut, Loader2, Shield, Bell,
+  Plus, ChevronsUpDown, Check, LogOut, Loader2, Shield, Bell, Cloud,
 } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
@@ -27,6 +27,7 @@ const nav = [
   { label: "Overview", to: "/app", icon: LayoutDashboard, end: true },
   { label: "Dashboards", to: "/app/dashboards", icon: PanelsTopLeft },
   { label: "Collections", to: "/app/collections", icon: Database },
+  { label: "Data Sources", to: "/app/data-sources", icon: Cloud },
   { label: "AI Studio", to: "/app/ai", icon: Sparkles },
   { label: "Activity", to: "/app/activity", icon: Activity },
   { label: "Notifications", to: "/app/notifications", icon: Bell },
@@ -127,7 +128,13 @@ export function AppSidebar() {
               <div className="px-2 py-2 text-xs text-muted-foreground">No workspaces yet</div>
             )}
             {orgs.map((o) => (
-              <DropdownMenuItem key={o.id} onClick={() => setCurrentOrgId(o.id)}>
+              <DropdownMenuItem
+                key={o.id}
+                onClick={() => setCurrentOrgId(o.id)}
+                className={cn(
+                  o.id === currentOrgId && "bg-sidebar-primary/15 text-sidebar-primary focus:bg-sidebar-primary/15 focus:text-sidebar-primary"
+                )}
+              >
                 <div className="h-5 w-5 rounded bg-gradient-primary grid place-items-center text-[10px] font-bold text-primary-foreground mr-2">
                   {o.name.charAt(0).toUpperCase()}
                 </div>
@@ -176,7 +183,7 @@ export function AppSidebar() {
                 "flex items-center rounded-md py-1.5 text-sm transition-all overflow-hidden",
                 expanded ? "gap-2.5 px-2.5" : "justify-center px-0",
                 active
-                  ? "bg-sidebar-accent text-sidebar-accent-foreground shadow-card"
+                  ? "border border-sidebar-primary/20 bg-sidebar-primary/15 text-sidebar-primary shadow-card"
                   : "text-sidebar-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
               )}
             >
@@ -214,7 +221,7 @@ export function AppSidebar() {
               "flex items-center rounded-md py-1.5 text-sm transition-colors overflow-hidden",
               expanded ? "gap-2.5 px-2.5" : "justify-center px-0",
               isActive
-                ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                ? "border border-sidebar-primary/20 bg-sidebar-primary/15 text-sidebar-primary"
                 : "text-sidebar-foreground hover:bg-sidebar-accent/60"
             )
           }

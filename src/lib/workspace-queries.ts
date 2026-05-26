@@ -98,6 +98,38 @@ export async function switchToWorkspace(orgId: string): Promise<Workspace | null
 }
 
 /**
+ * Delete a workspace. Only workspace owners are allowed server-side.
+ */
+export async function deleteWorkspace(orgId: string): Promise<{
+  success: boolean;
+  workspace_id: string;
+  workspace_name: string;
+}> {
+  try {
+    const { data, error } = await supabase.rpc("delete_workspace", {
+      p_org_id: orgId,
+    });
+
+    if (error) {
+      throw new Error(error.message || "Failed to delete workspace.");
+    }
+
+    if (!data || typeof data !== "object") {
+      throw new Error("Workspace deletion did not return a valid response.");
+    }
+
+    return data as {
+      success: boolean;
+      workspace_id: string;
+      workspace_name: string;
+    };
+  } catch (error) {
+    console.error("[queries] Error deleting workspace:", error);
+    throw error instanceof Error ? error : new Error("Failed to delete workspace.");
+  }
+}
+
+/**
  * Fetch accepted organization members for an organization.
  */
 export async function fetchOrgMembers(orgId: string) {

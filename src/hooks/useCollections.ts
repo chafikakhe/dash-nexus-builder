@@ -4,7 +4,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
 import { useWorkspacePermissions } from "@/hooks/useWorkspacePermissions";
 
-export type FieldType = "text" | "number" | "boolean" | "select" | "date" | "image";
+export type FieldType = "text" | "number" | "boolean" | "select" | "date" | "image" | "json";
 export type Field = { name: string; type: FieldType };
 
 export type Collection = {

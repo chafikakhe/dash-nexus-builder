@@ -175,15 +175,15 @@ function WidgetBody({ widget }: { widget: Widget }) {
           <AreaChart data={data}>
             <defs>
               <linearGradient id="ln" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity={0.5} />
-                <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity={0} />
+                <stop offset="0%" stopColor="hsl(var(--chart-1))" stopOpacity={0.5} />
+                <stop offset="100%" stopColor="hsl(var(--chart-1))" stopOpacity={0} />
               </linearGradient>
             </defs>
             <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
             <XAxis dataKey="label" fontSize={10} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} />
             <YAxis fontSize={10} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} />
             <Tooltip contentStyle={{ background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 11 }} />
-            <Area type="monotone" dataKey="value" stroke="hsl(var(--primary))" strokeWidth={2} fill="url(#ln)" />
+            <Area type="monotone" dataKey="value" stroke="hsl(var(--chart-1))" strokeWidth={2} fill="url(#ln)" />
           </AreaChart>
         ) : (
           <BarChart data={data}>
@@ -191,7 +191,7 @@ function WidgetBody({ widget }: { widget: Widget }) {
             <XAxis dataKey="label" fontSize={10} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} />
             <YAxis fontSize={10} stroke="hsl(var(--muted-foreground))" tickLine={false} axisLine={false} />
             <Tooltip contentStyle={{ background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 11 }} />
-            <Bar dataKey="value" fill="hsl(var(--primary))" radius={[3, 3, 0, 0]} />
+            <Bar dataKey="value" fill="hsl(var(--chart-1))" radius={[3, 3, 0, 0]} />
           </BarChart>
         )}
       </ResponsiveContainer>
@@ -210,7 +210,12 @@ function WidgetBody({ widget }: { widget: Widget }) {
       return acc;
     }, {} as Record<string, { name: string; value: number }>)) : [];
     if (!categoryKey || !valueKey || !segments.length) return noData;
-    const colors = ["hsl(var(--primary))", "hsl(var(--primary-glow))", "hsl(243 60% 40%)", "hsl(243 30% 30%)"];
+    const colors = [
+      "hsl(var(--chart-1))",
+      "hsl(var(--primary-glow))",
+      "hsl(var(--primary) / 0.72)",
+      "hsl(var(--primary) / 0.44)",
+    ];
     return (
       <ResponsiveContainer width="100%" height="100%">
         <PieChart>

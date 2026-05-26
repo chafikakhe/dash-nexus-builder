@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   Plus, Search, Database, Filter, Download, Sparkles, Upload,
-  Type, Hash, ToggleLeft, ListChecks, Calendar, Image as Img,
+  Type, Hash, ToggleLeft, ListChecks, Calendar, Image as Img, Braces,
   Trash2, Loader2,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -28,10 +28,10 @@ import { ImportModal } from "@/components/import/ImportModal";
 import { useWorkspacePermissions } from "@/hooks/useWorkspacePermissions";
 
 const fieldIcons: Record<FieldType, React.ComponentType<{ className?: string }>> = {
-  text: Type, number: Hash, boolean: ToggleLeft, select: ListChecks, date: Calendar, image: Img,
+  text: Type, number: Hash, boolean: ToggleLeft, select: ListChecks, date: Calendar, image: Img, json: Braces,
 };
 
-const FIELD_TYPES: FieldType[] = ["text", "number", "boolean", "select", "date", "image"];
+const FIELD_TYPES: FieldType[] = ["text", "number", "boolean", "select", "date", "image", "json"];
 
 function csvEscape(v: any): string {
   if (v === null || v === undefined) return "";
@@ -480,6 +480,27 @@ function CellEditor({
         onBlur={(e) => onChange(e.target.value || null)}
         readOnly={readOnly}
         className="w-full bg-transparent px-2 py-1 text-sm focus:bg-secondary/60 rounded outline-none focus:ring-1 focus:ring-primary"
+      />
+    );
+  }
+  if (field.type === "json") {
+    return (
+      <textarea
+        defaultValue={value == null ? "" : JSON.stringify(value, null, 2)}
+        onBlur={(e) => {
+          const nextValue = e.target.value.trim();
+          if (!nextValue) {
+            onChange(null);
+            return;
+          }
+          try {
+            onChange(JSON.parse(nextValue));
+          } catch (_error) {
+            onChange(nextValue);
+          }
+        }}
+        readOnly={readOnly}
+        className="min-h-20 w-full resize-y bg-transparent px-2 py-1 text-sm focus:bg-secondary/60 rounded outline-none focus:ring-1 focus:ring-primary font-mono"
       />
     );
   }
