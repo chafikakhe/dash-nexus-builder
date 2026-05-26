@@ -8,6 +8,7 @@ import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
 import { useWorkspacePermissions } from "@/hooks/useWorkspacePermissions";
+import { logWorkspaceActivity } from "@/lib/activity";
 
 export type Dashboard = {
   id: string;
@@ -261,6 +262,17 @@ export function useDashboards() {
         console.debug("[dashboards] Dashboard updated successfully");
         if (data) {
           setDashboards((prev) => prev.map((d) => (d.id === id ? (data as Dashboard) : d)));
+          const updated = data as Dashboard;
+          void logWorkspaceActivity({
+            workspaceId: currentOrgId,
+            action: "dashboard_updated",
+            targetType: "dashboard",
+            targetName: updated.name,
+            metadata: {
+              dashboard_id: updated.id,
+              changed_fields: Object.keys(patch),
+            },
+          });
         }
         return data as Dashboard | null;
       } catch (e: any) {
@@ -275,6 +287,7 @@ export function useDashboards() {
   const remove = useCallback(async (id: string) => {
     console.debug("[dashboards] Deleting dashboard:", id);
     try {
+      const existing = dashboards.find((dashboard) => dashboard.id === id);
       const { error } = await supabase.from("dashboards").delete().eq("id", id);
       if (error) {
         console.error("[dashboards] Delete error:", error.message, error);
@@ -287,13 +300,24 @@ export function useDashboards() {
       }
       console.debug("[dashboards] Dashboard deleted successfully");
       setDashboards((prev) => prev.filter((d) => d.id !== id));
+      if (currentOrgId && existing) {
+        void logWorkspaceActivity({
+          workspaceId: currentOrgId,
+          action: "dashboard_deleted",
+          targetType: "dashboard",
+          targetName: existing.name,
+          metadata: {
+            dashboard_id: existing.id,
+          },
+        });
+      }
       return true;
     } catch (e: any) {
       console.error("[dashboards] Unexpected delete error:", e);
       toast.error("Failed to delete dashboard");
       return false;
     }
-  }, []);
+  }, [currentOrgId, dashboards]);
 
   return { dashboards, loading, refetch: fetchAll, create, update, remove };
 }

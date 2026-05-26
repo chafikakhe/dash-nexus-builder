@@ -94,6 +94,50 @@ Deno.serve(async (req) => {
 
   if (insertError) return fail(500, "DASHBOARD_CREATE_FAILED", insertError.message);
 
+  const baseActivityPayload = {
+    workspace_id: orgId,
+    org_id: orgId,
+    user_id: userData.user.id,
+    user_name:
+      (typeof userData.user.user_metadata?.display_name === "string" && userData.user.user_metadata.display_name.trim())
+        ? userData.user.user_metadata.display_name.trim()
+        : userData.user.email ?? "Unknown",
+    actor_name:
+      (typeof userData.user.user_metadata?.display_name === "string" && userData.user.user_metadata.display_name.trim())
+        ? userData.user.user_metadata.display_name.trim()
+        : userData.user.email ?? "Unknown",
+    action: "dashboard_created",
+    target_type: "dashboard",
+    resource_type: "dashboard",
+    target_name: dashboard.name,
+    resource_name: dashboard.name,
+    metadata: {
+      dashboard_id: dashboard.id,
+      description: dashboard.description,
+      source: "edge_function",
+    },
+  };
+
+  const modernActivityInsert = await userClient.from("activity_log").insert(baseActivityPayload);
+  if (modernActivityInsert.error) {
+    const legacyActivityInsert = await userClient.from("activity_log").insert({
+      org_id: orgId,
+      user_id: userData.user.id,
+      actor_name: baseActivityPayload.actor_name,
+      action: "dashboard_created",
+      resource_type: "dashboard",
+      resource_name: dashboard.name,
+      metadata: baseActivityPayload.metadata,
+    });
+
+    if (legacyActivityInsert.error && dev) {
+      console.error("[create-dashboard] activity log failed", {
+        modern: modernActivityInsert.error,
+        legacy: legacyActivityInsert.error,
+      });
+    }
+  }
+
   return json(200, {
     dashboard,
   });

@@ -5,7 +5,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Plus, MoreHorizontal, Loader2, Trash2 } from "lucide-react";
+import { Plus, MoreHorizontal, Loader2, Shield, Trash2, UserMinus } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { sendInviteEmail } from "@/lib/email";
 import { useAuth } from "@/contexts/AuthContext";
@@ -15,6 +15,8 @@ import { useCollections, type Collection } from "@/hooks/useCollections";
 import { useWorkspacePermissions } from "@/hooks/useWorkspacePermissions";
 import { fetchOrgMembers, fetchOrgInvitations, createInvitation } from "@/lib/workspace-queries";
 import { supabase } from "@/lib/supabase";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { logWorkspaceActivity } from "@/lib/activity";
 
 type Member = {
   user_id: string;
@@ -59,6 +61,7 @@ export default function Members() {
   const [dashboardGrants, setDashboardGrants] = useState<Record<string, "view" | "edit">>({});
   const [collectionGrants, setCollectionGrants] = useState<Record<string, "view" | "edit">>({});
   const [inviteLoading, setInviteLoading] = useState(false);
+  const [memberActionUserId, setMemberActionUserId] = useState<string | null>(null);
 
   const { dashboards } = useDashboards();
   const { collections } = useCollections();
@@ -152,6 +155,18 @@ export default function Members() {
       setDashboardGrants({});
       setCollectionGrants({});
       setIsInviteOpen(false);
+      void logWorkspaceActivity({
+        workspaceId: currentOrgId,
+        action: "member_invited",
+        targetType: "member",
+        targetName: normalizedEmail,
+        metadata: {
+          invite_id: insertedInvite.id,
+          role: inviteRole,
+          dashboard_permissions: dashboardPermissions,
+          collection_permissions: collectionPermissions,
+        },
+      });
       await loadMembersAndInvites();
     } catch (error) {
       console.error("[members] invite error:", error);
@@ -174,6 +189,94 @@ export default function Members() {
     } catch (error) {
       console.error("[members] revoke error:", error);
       toast.error("Unable to revoke invitation.");
+    }
+  };
+
+  const canManageMember = (member: Member) => {
+    if (!user) return false;
+    if (member.user_id === user.id) return false;
+    if (member.role === "owner") return false;
+    if (currentOrg?.role === "owner") return true;
+    if (currentOrg?.role === "admin") return member.role === "member";
+    return false;
+  };
+
+  const handleChangeMemberRole = async (member: Member, nextRole: "admin" | "member") => {
+    if (!currentOrgId || member.role === nextRole) return;
+    setMemberActionUserId(member.user_id);
+
+    try {
+      const { error } = await supabase
+        .from("org_members")
+        .update({ role: nextRole })
+        .eq("org_id", currentOrgId)
+        .eq("user_id", member.user_id);
+
+      if (error) {
+        toast.error(error.message);
+        return;
+      }
+
+      void logWorkspaceActivity({
+        workspaceId: currentOrgId,
+        action: "role_changed",
+        targetType: "member",
+        targetName: member.display_name || member.email,
+        metadata: {
+          member_user_id: member.user_id,
+          member_email: member.email,
+          previous_role: member.role,
+          next_role: nextRole,
+        },
+      });
+
+      toast.success("Role updated.");
+      await loadMembersAndInvites();
+    } catch (error) {
+      console.error("[members] role update error:", error);
+      toast.error("Unable to update role.");
+    } finally {
+      setMemberActionUserId(null);
+    }
+  };
+
+  const handleRemoveMember = async (member: Member) => {
+    if (!currentOrgId) return;
+    if (!confirm(`Remove ${member.display_name} from this workspace?`)) return;
+
+    setMemberActionUserId(member.user_id);
+
+    try {
+      const { error } = await supabase
+        .from("org_members")
+        .delete()
+        .eq("org_id", currentOrgId)
+        .eq("user_id", member.user_id);
+
+      if (error) {
+        toast.error(error.message);
+        return;
+      }
+
+      void logWorkspaceActivity({
+        workspaceId: currentOrgId,
+        action: "member_removed",
+        targetType: "member",
+        targetName: member.display_name || member.email,
+        metadata: {
+          member_user_id: member.user_id,
+          member_email: member.email,
+          previous_role: member.role,
+        },
+      });
+
+      toast.success("Member removed.");
+      await loadMembersAndInvites();
+    } catch (error) {
+      console.error("[members] remove member error:", error);
+      toast.error("Unable to remove member.");
+    } finally {
+      setMemberActionUserId(null);
     }
   };
 
@@ -285,10 +388,30 @@ export default function Members() {
                       <div className="text-xs text-muted-foreground">{member.email}</div>
                     </div>
                     <span className={`inline-flex rounded-full border px-2 py-1 text-[11px] font-semibold ${roleColor(member.role)}`}>{roleLabel(member.role)}</span>
-                    {canViewMembers && (
-                      <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Member actions">
-                        <MoreHorizontal className="h-3.5 w-3.5" />
-                      </Button>
+                    {canViewMembers && canManageMember(member) && (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Member actions" disabled={memberActionUserId === member.user_id}>
+                            {memberActionUserId === member.user_id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <MoreHorizontal className="h-3.5 w-3.5" />}
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          {member.role !== "admin" && (
+                            <DropdownMenuItem onClick={() => handleChangeMemberRole(member, "admin")}>
+                              <Shield className="mr-2 h-3.5 w-3.5" /> Make admin
+                            </DropdownMenuItem>
+                          )}
+                          {member.role !== "member" && (
+                            <DropdownMenuItem onClick={() => handleChangeMemberRole(member, "member")}>
+                              <Shield className="mr-2 h-3.5 w-3.5" /> Make member
+                            </DropdownMenuItem>
+                          )}
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => handleRemoveMember(member)}>
+                            <UserMinus className="mr-2 h-3.5 w-3.5" /> Remove member
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     )}
                   </div>
                 );

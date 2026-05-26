@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Check } from "lucide-react";
 import { Topbar } from "@/components/layout/Topbar";
@@ -25,6 +25,8 @@ import { deleteWorkspace } from "@/lib/workspace-queries";
 import { toast } from "sonner";
 import { useAppearance } from "@/contexts/AppearanceContext";
 import { ACCENT_PRESETS, ACCENT_VALUES } from "@/lib/appearance";
+import { supabase } from "@/lib/supabase";
+import { logWorkspaceActivity } from "@/lib/activity";
 
 export default function Settings() {
   const navigate = useNavigate();
@@ -46,19 +48,182 @@ export default function Settings() {
   const [timezone, setTimezone] = useState("UTC");
   const [orgName, setOrgName] = useState(currentOrg?.name ?? "");
   const [saving, setSaving] = useState(false);
+  const [savingWorkspace, setSavingWorkspace] = useState(false);
   const [deletingWorkspace, setDeletingWorkspace] = useState(false);
 
   const userInitial = user?.email?.[0].toUpperCase() ?? "?";
 
+  useEffect(() => {
+    setOrgName(currentOrg?.name ?? "");
+  }, [currentOrg?.name]);
+
   const handleSaveProfile = async () => {
+    if (!user) {
+      toast.error("You must be signed in to update your profile.");
+      return;
+    }
     if (!fullName.trim()) {
       toast.error("Please enter a full name");
       return;
     }
     setSaving(true);
-    // TODO: Implement profile save to Supabase profiles table
-    setSaving(false);
-    toast.success("Profile saved");
+    try {
+      const displayName = fullName.trim();
+      const { error: profileError } = await supabase
+        .from("profiles")
+        .upsert(
+          {
+            id: user.id,
+            email: user.email ?? "",
+            display_name: displayName,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "id" },
+        );
+
+      if (profileError) {
+        toast.error(profileError.message);
+        return;
+      }
+
+      const { error: authError } = await supabase.auth.updateUser({
+        data: { display_name: displayName },
+      });
+
+      if (authError) {
+        toast.error(authError.message);
+        return;
+      }
+
+      if (currentOrgId) {
+        void logWorkspaceActivity({
+          workspaceId: currentOrgId,
+          action: "settings_updated",
+          targetType: "profile",
+          targetName: "profile settings",
+          metadata: {
+            section: "profile",
+            display_name: displayName,
+          },
+        });
+      }
+
+      toast.success("Profile saved");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleSaveWorkspace = async () => {
+    if (!currentOrgId || !orgName.trim()) {
+      toast.error("Enter a workspace name");
+      return;
+    }
+
+    setSavingWorkspace(true);
+
+    try {
+      const nextName = orgName.trim();
+      const previousName = currentOrg?.name ?? nextName;
+      const { error } = await supabase
+        .from("orgs")
+        .update({ name: nextName })
+        .eq("id", currentOrgId);
+
+      if (error) {
+        toast.error(error.message);
+        return;
+      }
+
+      await refreshOrgs();
+      void logWorkspaceActivity({
+        workspaceId: currentOrgId,
+        action: "settings_updated",
+        targetType: "workspace",
+        targetName: "workspace settings",
+        metadata: {
+          section: "workspace",
+          previous_name: previousName,
+          next_name: nextName,
+        },
+      });
+      toast.success("Workspace updated");
+    } finally {
+      setSavingWorkspace(false);
+    }
+  };
+
+  const handleThemeChange = (checked: boolean) => {
+    const nextTheme = checked ? "dark" : "light";
+    if (nextTheme === theme) return;
+    setTheme(nextTheme);
+    if (currentOrgId) {
+      void logWorkspaceActivity({
+        workspaceId: currentOrgId,
+        action: "settings_updated",
+        targetType: "appearance",
+        targetName: "theme",
+        metadata: {
+          section: "appearance",
+          key: "theme",
+          value: nextTheme,
+        },
+      });
+    }
+  };
+
+  const handleAccentChange = (value: (typeof ACCENT_VALUES)[number]) => {
+    if (value === accentPreset) return;
+    setAccentPreset(value);
+    if (currentOrgId) {
+      void logWorkspaceActivity({
+        workspaceId: currentOrgId,
+        action: "settings_updated",
+        targetType: "appearance",
+        targetName: "accent color",
+        metadata: {
+          section: "appearance",
+          key: "accent_color",
+          value,
+        },
+      });
+    }
+  };
+
+  const handleReduceMotionChange = (checked: boolean) => {
+    if (checked === reduceMotion) return;
+    setReduceMotion(checked);
+    if (currentOrgId) {
+      void logWorkspaceActivity({
+        workspaceId: currentOrgId,
+        action: "settings_updated",
+        targetType: "appearance",
+        targetName: "reduce motion",
+        metadata: {
+          section: "appearance",
+          key: "reduce_motion",
+          value: checked,
+        },
+      });
+    }
+  };
+
+  const handleCompactLayoutChange = (checked: boolean) => {
+    if (checked === compactLayout) return;
+    setCompactLayout(checked);
+    if (currentOrgId) {
+      void logWorkspaceActivity({
+        workspaceId: currentOrgId,
+        action: "settings_updated",
+        targetType: "appearance",
+        targetName: "compact layout",
+        metadata: {
+          section: "appearance",
+          key: "compact_layout",
+          value: checked,
+        },
+      });
+    }
   };
 
   const handleDeleteWorkspace = async () => {
@@ -143,6 +308,11 @@ export default function Settings() {
                 <Label>Slug</Label>
                 <Input value={currentOrg?.slug ?? ""} disabled />
               </div>
+              <div className="flex justify-end">
+                <Button className="bg-gradient-primary shadow-glow" onClick={handleSaveWorkspace} disabled={savingWorkspace}>
+                  {savingWorkspace ? "Saving…" : "Save workspace"}
+                </Button>
+              </div>
               <Separator />
               {isOwner ? (
                 <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4">
@@ -202,7 +372,7 @@ export default function Settings() {
                     Use the current dark UI or switch the whole app to light mode.
                   </div>
                 </div>
-                <Switch checked={theme === "dark"} onCheckedChange={(checked) => setTheme(checked ? "dark" : "light")} />
+                <Switch checked={theme === "dark"} onCheckedChange={handleThemeChange} />
               </div>
 
               <Separator />
@@ -223,7 +393,7 @@ export default function Settings() {
                       <button
                         key={value}
                         type="button"
-                        onClick={() => setAccentPreset(value)}
+                        onClick={() => handleAccentChange(value)}
                         className={[
                           "group rounded-xl border bg-secondary/35 px-3 py-3 text-left transition-all",
                           active
@@ -256,7 +426,7 @@ export default function Settings() {
                   <div className="text-sm font-medium">Reduce motion</div>
                   <div className="text-xs text-muted-foreground">Disable non-essential animations across the app.</div>
                 </div>
-                <Switch checked={reduceMotion} onCheckedChange={setReduceMotion} />
+                <Switch checked={reduceMotion} onCheckedChange={handleReduceMotionChange} />
               </div>
 
               <div className="flex items-center justify-between gap-4">
@@ -264,7 +434,7 @@ export default function Settings() {
                   <div className="text-sm font-medium">Compact layout</div>
                   <div className="text-xs text-muted-foreground">Use tighter radii and denser spacing for data-heavy views.</div>
                 </div>
-                <Switch checked={compactLayout} onCheckedChange={setCompactLayout} />
+                <Switch checked={compactLayout} onCheckedChange={handleCompactLayoutChange} />
               </div>
             </div>
           </TabsContent>

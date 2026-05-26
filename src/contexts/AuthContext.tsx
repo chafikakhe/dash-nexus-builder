@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, ReactNode, useCallback, useRef } from "react";
 import type { Session, User } from "@supabase/supabase-js";
 import { supabase, clearInvalidStoredSession } from "@/lib/supabase";
+import { logWorkspaceActivity } from "@/lib/activity";
 
 export type Org = { id: string; name: string; slug: string; plan: string; role: string };
 
@@ -81,6 +82,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           } catch (e) {
             console.error("[auth] create default org_members unexpected error", e);
           }
+          void logWorkspaceActivity({
+            workspaceId: createdOrg.id,
+            action: "workspace_created",
+            targetType: "workspace",
+            targetName: createdOrg.name,
+            metadata: {
+              workspace_id: createdOrg.id,
+              workspace_slug: createdOrg.slug,
+              source: "bootstrap",
+            },
+          });
           list = [{ ...createdOrg, role: "owner" }];
         }
       }

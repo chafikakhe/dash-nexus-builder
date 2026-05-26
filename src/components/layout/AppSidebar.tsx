@@ -22,6 +22,7 @@ import { useIsAdmin } from "@/hooks/useIsAdmin";
 import { useWorkspacePermissions } from "@/hooks/useWorkspacePermissions";
 import { InvitationNotificationBadge } from "@/components/invitations/InvitationNotificationBadge";
 import { usePendingInvitations } from "@/hooks/usePendingInvitations";
+import { logWorkspaceActivity } from "@/lib/activity";
 
 const nav = [
   { label: "Overview", to: "/app", icon: LayoutDashboard, end: true },
@@ -80,6 +81,21 @@ export function AppSidebar() {
       }
     } catch (e) {
       console.error("[sidebar] org_members insert unexpected error", e);
+    }
+    if (data?.id) {
+      const createdOrg = orgs.find((org) => org.id === data.id);
+      void logWorkspaceActivity({
+        workspaceId: data.id,
+        action: "workspace_created",
+        targetType: "workspace",
+        targetName: newName.trim(),
+        metadata: {
+          workspace_id: data.id,
+          workspace_slug: slug,
+          source: "sidebar",
+          plan: createdOrg?.plan ?? "free",
+        },
+      });
     }
     await refreshOrgs();
     if (data?.id) setCurrentOrgId(data.id);

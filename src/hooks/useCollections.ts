@@ -3,6 +3,7 @@ import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
 import { useWorkspacePermissions } from "@/hooks/useWorkspacePermissions";
+import { logWorkspaceActivity } from "@/lib/activity";
 
 export type FieldType = "text" | "number" | "boolean" | "select" | "date" | "image" | "json";
 export type Field = { name: string; type: FieldType };
@@ -137,6 +138,16 @@ export function useCollections() {
         console.debug("[collections] Collection created successfully:", data);
         const col = { ...(data as any), schema: (data as any).schema ?? [], permission: "edit" as const } as Collection;
         setCollections((prev) => [...prev, col]);
+        void logWorkspaceActivity({
+          workspaceId: currentOrgId,
+          action: "collection_created",
+          targetType: "collection",
+          targetName: col.name,
+          metadata: {
+            collection_id: col.id,
+            field_count: col.schema.length,
+          },
+        });
         return col;
       } catch (e: any) {
         console.error("[collections] Unexpected create error:", e);
@@ -150,6 +161,7 @@ export function useCollections() {
   const updateSchema = useCallback(async (id: string, schema: Field[]) => {
     console.debug("[collections] Updating schema for collection:", id, { schema });
     try {
+      const existing = collections.find((collection) => collection.id === id);
       const { error } = await supabase.from("collections").update({ schema }).eq("id", id);
       if (error) {
         console.error("[collections] Update error:", error.message, error);
@@ -162,17 +174,31 @@ export function useCollections() {
       }
       console.debug("[collections] Schema updated successfully");
       setCollections((prev) => prev.map((c) => (c.id === id ? { ...c, schema } : c)));
+      if (currentOrgId && existing) {
+        void logWorkspaceActivity({
+          workspaceId: currentOrgId,
+          action: "collection_updated",
+          targetType: "collection",
+          targetName: existing.name,
+          metadata: {
+            collection_id: id,
+            field_count: schema.length,
+            field_names: schema.map((field) => field.name),
+          },
+        });
+      }
       return true;
     } catch (e: any) {
       console.error("[collections] Unexpected update error:", e);
       toast.error("Failed to update schema");
       return false;
     }
-  }, []);
+  }, [collections, currentOrgId]);
 
   const removeCollection = useCallback(async (id: string) => {
     console.debug("[collections] Deleting collection:", id);
     try {
+      const existing = collections.find((collection) => collection.id === id);
       const { error } = await supabase.from("collections").delete().eq("id", id);
       if (error) {
         console.error("[collections] Delete error:", error.message, error);
@@ -185,13 +211,24 @@ export function useCollections() {
       }
       console.debug("[collections] Collection deleted successfully");
       setCollections((prev) => prev.filter((c) => c.id !== id));
+      if (currentOrgId && existing) {
+        void logWorkspaceActivity({
+          workspaceId: currentOrgId,
+          action: "collection_deleted",
+          targetType: "collection",
+          targetName: existing.name,
+          metadata: {
+            collection_id: existing.id,
+          },
+        });
+      }
       return true;
     } catch (e: any) {
       console.error("[collections] Unexpected delete error:", e);
       toast.error("Failed to delete collection");
       return false;
     }
-  }, []);
+  }, [collections, currentOrgId]);
 
   return { collections, loading, refetch: fetchAll, createCollection, updateSchema, removeCollection };
 }
