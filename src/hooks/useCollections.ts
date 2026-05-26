@@ -4,6 +4,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
 import { useWorkspacePermissions } from "@/hooks/useWorkspacePermissions";
 import { logWorkspaceActivity } from "@/lib/activity";
+import { insertCollectionWithAccessCheck } from "@/lib/collections";
 
 export type FieldType = "text" | "number" | "boolean" | "select" | "date" | "image" | "json";
 export type Field = { name: string; type: FieldType };
@@ -94,56 +95,18 @@ export function useCollections() {
         return null;
       }
       console.debug("[collections] Creating collection:", { name, orgId: currentOrgId, userId: user.id, schema });
-
-      // Verify user membership and role in org_members to avoid RLS failures
-      try {
-        const { data: membership, error: membErr } = await supabase
-          .from("org_members")
-          .select("role")
-          .eq("org_id", currentOrgId)
-          .eq("user_id", user.id)
-          .maybeSingle();
-        if (membErr) {
-          console.error("[collections] membership check error", membErr);
-        }
-        if (!membership) {
-          console.warn("[collections] User not found in org_members for org", currentOrgId);
-          toast.error("You don't have access to this workspace");
-          return null;
-        }
-        if (!canCreateContent || !["owner", "admin"].includes(membership.role)) {
-          toast.error("Only workspace owners or admins can create collections");
-          return null;
-        }
-      } catch (e) {
-        console.error("[collections] membership check unexpected error", e);
+      if (!canCreateContent) {
+        toast.error("Only workspace owners or admins can create collections");
+        return null;
       }
       try {
-        const insertPayload = {
-          org_id: currentOrgId,
+        const data = await insertCollectionWithAccessCheck({
+          orgId: currentOrgId,
+          userId: user.id,
           name,
           schema,
-          created_by: user.id,
-        };
-        console.debug("[collections] Insert payload:", insertPayload);
-
-        const { data, error } = await supabase
-          .from("collections")
-          .insert(insertPayload)
-          .select("*")
-          .single();
-
-        if (error) {
-          console.error("[collections] Insert error:", error.code, error.message, error);
-          console.error("[collections] Insert payload that failed:", insertPayload);
-          // Show detailed error for RLS violations
-          if (error.code === "PGRST301" || error.message.includes("row level security")) {
-            toast.error(import.meta.env.DEV ? `Permission denied: ${error.message}` : "Permission denied. Check your workspace role.");
-          } else {
-            toast.error(`Failed to create collection: ${error.message}`);
-          }
-          return null;
-        }
+          source: "collections",
+        });
 
         console.debug("[collections] Collection created successfully:", data);
         const col = { ...(data as any), schema: (data as any).schema ?? [], permission: "edit" as const } as Collection;
@@ -161,7 +124,11 @@ export function useCollections() {
         return col;
       } catch (e: any) {
         console.error("[collections] Unexpected create error:", e);
-        toast.error(import.meta.env.DEV && e instanceof Error ? `Failed to create collection: ${e.message}` : "Failed to create collection");
+        if (e instanceof Error && e.message.includes("row level security")) {
+          toast.error(import.meta.env.DEV ? `Permission denied: ${e.message}` : "Permission denied. Check your workspace role.");
+        } else {
+          toast.error(import.meta.env.DEV && e instanceof Error ? `Failed to create collection: ${e.message}` : "Failed to create collection");
+        }
         return null;
       }
     },

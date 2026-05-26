@@ -43,9 +43,17 @@ type BuilderWidget = {
   };
 };
 
+type GeminiFailure = {
+  status: number;
+  code: string;
+  message: string;
+  retryable: boolean;
+};
+
 const allowedTypes = new Set(["stat", "bar_chart", "line_chart", "pie_chart", "table"]);
 const allowedAggregations = new Set(["count", "sum", "avg", "min", "max"]);
 const dev = Deno.env.get("ENVIRONMENT") === "development";
+const retryDelaysMs = [1000, 2000, 4000];
 
 function json(status: number, body: Record<string, unknown>) {
   return new Response(JSON.stringify(body), {
@@ -60,17 +68,23 @@ function fail(status: number, code: string, message: string) {
 }
 
 function getEnv() {
+  const configuredModel =
+    Deno.env.get("GOOGLE_AI_MODEL") ??
+    Deno.env.get("GEMINI_MODEL") ??
+    "gemini-2.5-pro";
+
   return {
     supabaseUrl: Deno.env.get("SUPABASE_URL") ?? "",
     anonKey: Deno.env.get("SUPABASE_ANON_KEY") ?? "",
     serviceRoleKey: Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
-    googleAiKey: Deno.env.get("GOOGLE_AI_STUDIO_API_KEY") ?? "",
-    googleAiModel: Deno.env.get("GOOGLE_AI_MODEL") ?? "gemini-2.5-flash",
+    googleAiKey: Deno.env.get("GOOGLE_AI_STUDIO_API_KEY") ?? Deno.env.get("GEMINI_API_KEY") ?? "",
+    googleAiModel: configuredModel,
+    googleAiModels: Array.from(new Set([configuredModel, "gemini-2.5-pro", "gemini-1.5-pro", "gemini-1.5-flash"])),
   };
 }
 
 function missingEnvError(env: ReturnType<typeof getEnv>) {
-  if (!env.googleAiKey) return "Missing GOOGLE_AI_STUDIO_API_KEY";
+  if (!env.googleAiKey) return "Missing GOOGLE_AI_STUDIO_API_KEY or GEMINI_API_KEY";
   if (!env.supabaseUrl) return "Missing SUPABASE_URL";
   if (!env.serviceRoleKey) return "Missing SUPABASE_SERVICE_ROLE_KEY";
   if (!env.anonKey) return "Missing SUPABASE_ANON_KEY";
@@ -85,9 +99,24 @@ function googleAiErrorMessage(error: any, fallback: string) {
   return `${reason}: ${message}`;
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function toGeminiFailure(status: number, body: any, fallbackMessage: string): GeminiFailure {
+  const message = body?.error?.message || body?.error?.status || fallbackMessage;
+
+  return {
+    status,
+    code: "GOOGLE_AI_REQUEST_FAILED",
+    message,
+    retryable: [408, 429, 499, 500, 502, 503, 504].includes(status),
+  };
+}
+
 async function testGoogleAI(googleAiKey: string, googleAiModel: string) {
   if (!googleAiKey) {
-    return fail(500, "GOOGLE_AI_STUDIO_API_KEY_MISSING", "Missing GOOGLE_AI_STUDIO_API_KEY");
+    return fail(500, "GOOGLE_AI_STUDIO_API_KEY_MISSING", "Missing GOOGLE_AI_STUDIO_API_KEY or GEMINI_API_KEY");
   }
 
   try {
@@ -184,7 +213,7 @@ function extractJsonObject(text: string) {
 
 async function requestDashboardWidgetsFromGoogleAI(input: {
   googleAiKey: string;
-  googleAiModel: string;
+  googleAiModels: string[];
   prompt: string;
   schemaForAi: Array<{ id: string; name: string; fields?: Array<{ name: string; type: string }> }>;
   outputSchema: Record<string, unknown>;
@@ -194,86 +223,145 @@ async function requestDashboardWidgetsFromGoogleAI(input: {
   let lastInvalidText = "";
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const aiResponse = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(input.googleAiModel)}:generateContent?key=${encodeURIComponent(input.googleAiKey)}`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          systemInstruction: {
-            parts: [
-              {
-                text: [
-                  "You generate dashboard widget JSON only.",
-                  "Use only the supplied collection ids and field names.",
-                  "Do not generate SQL, React code, auth changes, RLS changes, workspace changes, markdown, or prose.",
-                  "Prefer 3 to 6 useful widgets. Use count aggregation when no numeric metric field is suitable.",
-                  "Return valid JSON matching the requested structure.",
-                  "For optional string fields, return an empty string instead of null.",
-                ].join(" "),
-              },
-            ],
-          },
-          contents: [
-            {
-              role: "user",
-              parts: [
-                {
-                  text: JSON.stringify({
-                    ...(attempt === 0
-                      ? {
-                          prompt: input.prompt,
-                          workspaceSchema: input.schemaForAi,
-                          instructions: [
-                            "Return the JSON object now.",
-                            "Every dataSourceId must match one of the provided collection ids exactly.",
-                            "Every xField, yField, metricField, and columns entry must match provided field names exactly.",
-                            "For bar_chart, line_chart, and pie_chart, choose both xField and yField from the same selected collection.",
-                            "Do not invent field names. Do not use labels, aliases, or derived names that are not in the schema.",
-                            input.validationError
-                              ? `Previous validation error to fix: ${input.validationError}`
-                              : "",
-                          ].filter(Boolean).join(" "),
-                        }
-                      : {
-                          instructions: [
-                            "Repair the invalid JSON below.",
-                            `JSON parse error: ${lastError}`,
-                            "Return corrected JSON only.",
-                            "Do not add markdown fences or explanations.",
-                            "Invalid JSON:",
-                            lastInvalidText,
-                          ].join("\n"),
-                        }),
-                  }),
-                },
-              ],
-            },
-          ],
-          generationConfig: {
-            temperature: 0,
-            topP: 0.9,
-            maxOutputTokens: 4096,
-            responseMimeType: "application/json",
-            responseJsonSchema: input.outputSchema,
-          },
-        }),
-      }
-    );
-
-    if (!aiResponse.ok) {
-      const details = await aiResponse.json().catch(async () => {
-        const text = await aiResponse.text().catch(() => "");
-        return { error: { message: text || `Google AI request failed with HTTP ${aiResponse.status}` } };
-      });
-      if (dev) console.error("[generate-dashboard] Google AI error", details);
-      throw new Error(googleAiErrorMessage(details, "AI generation failed. Please try again."));
-    }
-
     try {
-      const aiData = await aiResponse.json();
+      let aiData: any = null;
+      let lastFailure: GeminiFailure | null = null;
+
+      modelLoop:
+      for (let modelIndex = 0; modelIndex < input.googleAiModels.length; modelIndex += 1) {
+        const model = input.googleAiModels[modelIndex];
+
+        for (let retryAttempt = 0; retryAttempt < retryDelaysMs.length; retryAttempt += 1) {
+          console.log("[generate-dashboard] selected model", model);
+          console.log("[generate-dashboard] retry count", retryAttempt);
+
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 60_000);
+
+          try {
+            const aiResponse = await fetch(
+              `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(input.googleAiKey)}`,
+              {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                },
+                signal: controller.signal,
+                body: JSON.stringify({
+                  systemInstruction: {
+                    parts: [
+                      {
+                        text: [
+                          "You generate dashboard widget JSON only.",
+                          "Use only the supplied collection ids and field names.",
+                          "Do not generate SQL, React code, auth changes, RLS changes, workspace changes, markdown, or prose.",
+                          "Prefer 3 to 6 useful widgets. Use count aggregation when no numeric metric field is suitable.",
+                          "Return valid JSON matching the requested structure.",
+                          "For optional string fields, return an empty string instead of null.",
+                        ].join(" "),
+                      },
+                    ],
+                  },
+                  contents: [
+                    {
+                      role: "user",
+                      parts: [
+                        {
+                          text: JSON.stringify({
+                            ...(attempt === 0
+                              ? {
+                                  prompt: input.prompt,
+                                  workspaceSchema: input.schemaForAi,
+                                  instructions: [
+                                    "Return the JSON object now.",
+                                    "Every dataSourceId must match one of the provided collection ids exactly.",
+                                    "Every xField, yField, metricField, and columns entry must match provided field names exactly.",
+                                    "For bar_chart, line_chart, and pie_chart, choose both xField and yField from the same selected collection.",
+                                    "Do not invent field names. Do not use labels, aliases, or derived names that are not in the schema.",
+                                    input.validationError
+                                      ? `Previous validation error to fix: ${input.validationError}`
+                                      : "",
+                                  ].filter(Boolean).join(" "),
+                                }
+                              : {
+                                  instructions: [
+                                    "Repair the invalid JSON below.",
+                                    `JSON parse error: ${lastError}`,
+                                    "Return corrected JSON only.",
+                                    "Do not add markdown fences or explanations.",
+                                    "Invalid JSON:",
+                                    lastInvalidText,
+                                  ].join("\n"),
+                                }),
+                          }),
+                        },
+                      ],
+                    },
+                  ],
+                  generationConfig: {
+                    temperature: 0,
+                    topP: 0.9,
+                    maxOutputTokens: 4096,
+                    responseMimeType: "application/json",
+                    responseJsonSchema: input.outputSchema,
+                  },
+                }),
+              }
+            );
+
+            clearTimeout(timeout);
+
+            if (!aiResponse.ok) {
+              const details = await aiResponse.json().catch(async () => {
+                const text = await aiResponse.text().catch(() => "");
+                return { error: { message: text || `Google AI request failed with HTTP ${aiResponse.status}` } };
+              });
+              if (dev) console.error("[generate-dashboard] Google AI error", details);
+              const failure = toGeminiFailure(
+                aiResponse.status,
+                details,
+                `Google AI request failed with HTTP ${aiResponse.status}`
+              );
+              console.error("[generate-dashboard] exact Gemini error", failure, details);
+              lastFailure = failure;
+              if (failure.retryable && retryAttempt < retryDelaysMs.length - 1) {
+                await sleep(retryDelaysMs[retryAttempt]);
+                continue;
+              }
+              continue modelLoop;
+            }
+
+            aiData = await aiResponse.json();
+            break modelLoop;
+          } catch (error) {
+            clearTimeout(timeout);
+            console.error("[generate-dashboard] exact Gemini error", error);
+            const isTimeout = error instanceof DOMException && error.name === "AbortError";
+            lastFailure = {
+              status: isTimeout ? 504 : 502,
+              code: isTimeout ? "AI_TIMEOUT" : "GOOGLE_AI_NETWORK_ERROR",
+              message: isTimeout
+                ? "AI request timed out after 60 seconds."
+                : error instanceof Error
+                  ? error.message
+                  : "Google AI request failed",
+              retryable: true,
+            };
+            if (retryAttempt < retryDelaysMs.length - 1) {
+              await sleep(retryDelaysMs[retryAttempt]);
+              continue;
+            }
+          }
+        }
+      }
+
+      if (!aiData) {
+        if (lastFailure?.code === "AI_TIMEOUT") {
+          throw new Error("AI took too long to respond. Please try again.");
+        }
+        throw new Error("Temporary AI overload, please try again.");
+      }
+
       lastInvalidText = extractJsonObject(parseGoogleAiText(aiData));
       return JSON.parse(lastInvalidText) as { widgets?: unknown };
     } catch (error) {
@@ -558,14 +646,21 @@ Deno.serve(async (req) => {
     try {
       parsed = await requestDashboardWidgetsFromGoogleAI({
         googleAiKey: env.googleAiKey,
-        googleAiModel: env.googleAiModel,
+        googleAiModels: env.googleAiModels,
         prompt,
         schemaForAi,
         outputSchema,
         validationError: lastValidationError || undefined,
       });
     } catch (error) {
-      return fail(422, "AI_INVALID_JSON", error instanceof Error ? error.message : "AI returned invalid JSON.");
+      const message = error instanceof Error ? error.message : "AI returned invalid JSON.";
+      if (message.includes("too long")) {
+        return fail(504, "AI_TIMEOUT", "AI took too long to respond. Please try again.");
+      }
+      if (message.includes("Temporary AI overload")) {
+        return fail(503, "AI_TEMPORARILY_BUSY", "Temporary AI overload, please try again.");
+      }
+      return fail(422, "AI_INVALID_JSON", message);
     }
 
     try {

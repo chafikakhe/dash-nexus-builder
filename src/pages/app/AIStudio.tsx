@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowUp, BarChart3, Bot, Database, Loader2, Sparkles, Wand2 } from "lucide-react";
 import { Topbar } from "@/components/layout/Topbar";
@@ -68,16 +68,62 @@ export default function AIStudio() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [statusMessage, setStatusMessage] = useState<string>("AI is thinking...");
+  const [lastModelNote, setLastModelNote] = useState<string | null>(null);
+  const [cooldownUntil, setCooldownUntil] = useState(0);
+  const loadingTimersRef = useRef<number[]>([]);
+  const cooldownIntervalRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      for (const timer of loadingTimersRef.current) {
+        window.clearTimeout(timer);
+      }
+      if (cooldownIntervalRef.current) {
+        window.clearInterval(cooldownIntervalRef.current);
+      }
+    };
+  }, []);
 
   const send = async (text: string) => {
     const cleaned = text.trim();
     if (!cleaned || loading) return;
+    if (Date.now() < cooldownUntil) {
+      setError("Please wait a few seconds before sending another request.");
+      return;
+    }
 
     const nextHistory = [...messages, { role: "user" as const, content: cleaned }];
     setMessages(nextHistory);
     setInput("");
     setLoading(true);
     setError(null);
+    setLastModelNote(null);
+    setStatusMessage("AI is thinking...");
+    setCooldownUntil(Date.now() + 4_000);
+    if (cooldownIntervalRef.current) {
+      window.clearInterval(cooldownIntervalRef.current);
+    }
+    cooldownIntervalRef.current = window.setInterval(() => {
+      setCooldownUntil((value) => {
+        if (value <= Date.now()) {
+          if (cooldownIntervalRef.current) {
+            window.clearInterval(cooldownIntervalRef.current);
+            cooldownIntervalRef.current = null;
+          }
+          return 0;
+        }
+        return value;
+      });
+    }, 250);
+
+    for (const timer of loadingTimersRef.current) {
+      window.clearTimeout(timer);
+    }
+    loadingTimersRef.current = [
+      window.setTimeout(() => setStatusMessage("AI is currently busy, retrying..."), 1_000),
+      window.setTimeout(() => setStatusMessage("Using fallback AI model if needed..."), 3_000),
+    ];
 
     try {
       if (shouldCreateDashboardFromPrompt(cleaned)) {
@@ -113,19 +159,31 @@ export default function AIStudio() {
         return;
       }
 
-      const reply = await sendAIStudioMessage({
+      const response = await sendAIStudioMessage({
         message: cleaned,
         history: messages,
       });
 
-      setMessages([...nextHistory, { role: "assistant", content: reply }]);
+      if (response.usedFallback && response.model) {
+        setLastModelNote(`Used fallback model: ${response.model}`);
+      } else if (response.model) {
+        setLastModelNote(`Model: ${response.model}`);
+      }
+
+      setMessages([...nextHistory, { role: "assistant", content: response.reply }]);
     } catch (err) {
       setMessages(messages);
-      setError(err instanceof Error ? err.message : "Failed to contact AI Studio.");
+      setError(err instanceof Error ? err.message : "Temporary AI overload, please try again.");
     } finally {
+      for (const timer of loadingTimersRef.current) {
+        window.clearTimeout(timer);
+      }
+      loadingTimersRef.current = [];
       setLoading(false);
     }
   };
+
+  const cooldownSeconds = cooldownUntil > Date.now() ? Math.ceil((cooldownUntil - Date.now()) / 1000) : 0;
 
   return (
     <>
@@ -185,7 +243,7 @@ export default function AIStudio() {
                     </div>
                     <div className="flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-3 text-sm text-muted-foreground">
                       <Loader2 className="h-4 w-4 animate-spin" />
-                      Creating dashboard...
+                      {statusMessage}
                     </div>
                   </div>
                 ) : null}
@@ -199,6 +257,11 @@ export default function AIStudio() {
             {error ? (
               <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
                 {error}
+              </div>
+            ) : null}
+            {lastModelNote ? (
+              <div className="mb-3 rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-sm text-primary">
+                {lastModelNote}
               </div>
             ) : null}
 
@@ -224,11 +287,15 @@ export default function AIStudio() {
                 disabled={loading}
               />
               <div className="flex items-center justify-between px-3 pb-2">
-                <span className="text-[10px] text-muted-foreground">Google AI Studio · Gemini · direct dashboard creation</span>
+                <span className="text-[10px] text-muted-foreground">
+                  {cooldownSeconds > 0
+                    ? `Please wait ${cooldownSeconds}s before sending another request`
+                    : "Google AI Studio · Gemini · direct dashboard creation"}
+                </span>
                 <Button
                   size="icon"
                   type="submit"
-                  disabled={loading || input.trim().length < 3}
+                  disabled={loading || cooldownSeconds > 0 || input.trim().length < 3}
                   className="h-7 w-7 rounded-md bg-gradient-primary shadow-glow"
                 >
                   {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowUp className="h-3.5 w-3.5" />}

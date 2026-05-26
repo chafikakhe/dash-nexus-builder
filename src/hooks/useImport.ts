@@ -16,6 +16,7 @@ import {
   checkDuplicateImport,
   verifyCollectionAccess,
 } from "@/services/import/supabaseService";
+import { logWorkspaceActivity } from "@/lib/activity";
 import type {
   ParsedFileData,
   FieldDetectionResult,
@@ -290,6 +291,7 @@ export function useImport() {
 
           const created = await createCollectionWithFields(
             orgId,
+            userId,
             config.collectionName,
             state.detectedFields
           );
@@ -300,6 +302,17 @@ export function useImport() {
 
           collectionId = created.collectionId;
           existingFields = created.fields;
+          void logWorkspaceActivity({
+            workspaceId: orgId,
+            action: "collection_created",
+            targetType: "collection",
+            targetName: config.collectionName,
+            metadata: {
+              collection_id: collectionId,
+              field_count: existingFields.length,
+              source: "import",
+            },
+          });
         } else {
           if (!config.collectionId) {
             throw new Error("Collection ID is required");

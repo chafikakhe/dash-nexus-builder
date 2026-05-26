@@ -4,6 +4,7 @@
  */
 
 import { supabase } from "@/lib/supabase";
+import { insertCollectionWithAccessCheck } from "@/lib/collections";
 import type { Field } from "@/hooks/useCollections";
 import type {
   FieldDetectionResult,
@@ -18,30 +19,23 @@ import { normalizeValue } from "@/features/import/utils/fieldDetection";
  */
 export async function createCollectionWithFields(
   orgId: string,
+  userId: string,
   name: string,
   fields: FieldDetectionResult[]
 ): Promise<{ collectionId: string; fields: Field[] } | null> {
   try {
-    // Create collection
-    const { data: collection, error: collError } = await supabase
-      .from("collections")
-      .insert({
-        org_id: orgId,
-        name,
-        schema: fields.map((f) => ({
-          name: f.name,
-          type: f.type,
-          required: f.required,
-          config: f.config,
-        })),
-      })
-      .select("*")
-      .single();
-
-    if (collError) {
-      console.error("[import] Create collection error:", collError);
-      throw new Error(`Failed to create collection: ${collError.message}`);
-    }
+    const collection = await insertCollectionWithAccessCheck({
+      orgId,
+      userId,
+      name,
+      schema: fields.map((f) => ({
+        name: f.name,
+        type: f.type,
+        required: f.required,
+        config: f.config,
+      })),
+      source: "import",
+    });
 
     if (!collection) {
       throw new Error("Collection creation returned no data");
